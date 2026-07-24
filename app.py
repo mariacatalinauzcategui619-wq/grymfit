@@ -12,6 +12,22 @@ from googleapiclient.discovery import build
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
 
 # ==========================================
+# FUNCIÓN PARA HACER ÚNICOS LOS NOMBRES DE COLUMNAS
+# ==========================================
+def renombrar_columnas_duplicadas(cols):
+    seen = {}
+    new_cols = []
+    for col in cols:
+        name = str(col).strip() if str(col).strip() != '' else "Columna"
+        if name in seen:
+            seen[name] += 1
+            new_cols.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 0
+            new_cols.append(name)
+    return new_cols
+
+# ==========================================
 # CONEXIÓN DIRECTA A GOOGLE DRIVE Y SHEETS
 # ==========================================
 @st.cache_data(ttl=30)
@@ -41,7 +57,7 @@ def cargar_datos_drive():
         files = results.get('files', [])
         
         if not files:
-            st.error("No se encontró el archivo 'Planificador General 2026' en Google Drive. Verifica haberlo compartido con el correo de la cuenta de servicio.")
+            st.error("No se encontró el archivo 'Planificador General 2026' en Google Drive.")
             st.stop()
             
         spreadsheet_id = files[0]['id']
@@ -57,15 +73,18 @@ def cargar_datos_drive():
             ).execute()
             values = result.get('values', [])
             if values:
-                # Determinar el número máximo de columnas en los datos
+                # Determinar el número máximo de columnas
                 max_cols = max(len(row) for row in values)
                 
-                # Rellenar filas cortas con cadenas vacías para igualar la longitud
+                # Normalizar filas
                 values_normalizados = [row + [''] * (max_cols - len(row)) for row in values]
                 
-                # Crear DataFrame con nombres de columnas
-                headers = [str(c) if str(c).strip() != '' else f"Columna {i+1}" for i, c in enumerate(values_normalizados[0])]
-                df = pd.DataFrame(values_normalizados[1:], columns=headers)
+                # Obtener encabezados y hacerlos únicos
+                headers_raw = values_normalizados[0]
+                headers_unicos = renombrar_columnas_duplicadas(headers_raw)
+                
+                # Crear DataFrame
+                df = pd.DataFrame(values_normalizados[1:], columns=headers_unicos)
                 datos_pestanas[nombre] = df
             else:
                 datos_pestanas[nombre] = pd.DataFrame()
