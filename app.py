@@ -57,7 +57,15 @@ def cargar_datos_drive():
             ).execute()
             values = result.get('values', [])
             if values:
-                df = pd.DataFrame(values[1:], columns=values[0])
+                # Determinar el número máximo de columnas en los datos
+                max_cols = max(len(row) for row in values)
+                
+                # Rellenar filas cortas con cadenas vacías para igualar la longitud
+                values_normalizados = [row + [''] * (max_cols - len(row)) for row in values]
+                
+                # Crear DataFrame con nombres de columnas
+                headers = [str(c) if str(c).strip() != '' else f"Columna {i+1}" for i, c in enumerate(values_normalizados[0])]
+                df = pd.DataFrame(values_normalizados[1:], columns=headers)
                 datos_pestanas[nombre] = df
             else:
                 datos_pestanas[nombre] = pd.DataFrame()
