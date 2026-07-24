@@ -21,7 +21,13 @@ def cargar_datos_drive():
         "https://www.googleapis.com/auth/drive"
     ]
     
+    # Obtener credenciales de Streamlit Secrets
     creds_dict = dict(st.secrets["google_credentials"])
+    
+    # Reparar saltos de línea en la clave privada si están dañados
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    
     try:
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         service = build('sheets', 'v4', credentials=creds)
