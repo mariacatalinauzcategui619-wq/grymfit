@@ -21,14 +21,12 @@ def cargar_datos_drive():
         "https://www.googleapis.com/auth/drive"
     ]
     
-    # Cargar credenciales directamente desde los Secrets de Streamlit
     creds_dict = dict(st.secrets["google_credentials"])
     try:
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         service = build('sheets', 'v4', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         
-        # Buscar el archivo "Planificador Grymfit" en Drive
         results = drive_service.files().list(
             q="name = 'Planificador Grymfit' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
             fields="files(id, name)"
@@ -41,7 +39,6 @@ def cargar_datos_drive():
             
         spreadsheet_id = files[0]['id']
         
-        # Obtener nombres de las pestañas
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', '')
         nombres_pestanas = [sheet['properties']['title'] for sheet in sheets]
@@ -63,5 +60,15 @@ def cargar_datos_drive():
         st.error(f"Error al conectar con Google Drive: {e}")
         st.stop()
 
+# Cargar datos
+datos, spreadsheet_id, service = cargar_datos_drive()
+
 st.title("🏋️‍♂️ Planificador GRYMFIT")
-st.write("Cargando tus datos...")
+
+# Mostrar las pestañas de tu Google Sheet en la App
+if datos:
+    opcion = st.sidebar.selectbox("Selecciona una sección:", list(datos.keys()))
+    st.header(f"Sección: {opcion}")
+    st.dataframe(datos[opcion], use_container_width=True)
+else:
+    st.warning("No se encontraron datos en el documento.")
