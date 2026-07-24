@@ -24,7 +24,7 @@ def cargar_datos_drive():
     # Obtener credenciales de Streamlit Secrets
     creds_dict = dict(st.secrets["google_credentials"])
     
-    # Reparar saltos de línea en la clave privada si están dañados
+    # Reparar saltos de línea en la clave privada si vienen escapados
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     
@@ -33,14 +33,15 @@ def cargar_datos_drive():
         service = build('sheets', 'v4', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         
+        # Buscar el archivo "Planificador General 2026" en Drive
         results = drive_service.files().list(
-            q="name = 'Planificador Grymfit' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+            q="name = 'Planificador General 2026' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
             fields="files(id, name)"
         ).execute()
         files = results.get('files', [])
         
         if not files:
-            st.error("No se encontró el archivo 'Planificador Grymfit' en Google Drive.")
+            st.error("No se encontró el archivo 'Planificador General 2026' en Google Drive. Verifica haberlo compartido con el correo de la cuenta de servicio.")
             st.stop()
             
         spreadsheet_id = files[0]['id']
