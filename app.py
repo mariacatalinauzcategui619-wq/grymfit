@@ -7,50 +7,45 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 # ==========================================
-# CONFIGURACIÓN DE LA PÁGINA
+# CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
 
 # ==========================================
-# CONEXIÓN DIRECTA A GOOGLE DRIVE Y SHEETS
+# CONEXIÓN A GOOGLE DRIVE EN TIEMPO REAL (SIN MEMORIA TEMPORAL BLOQUEANTE)
 # ==========================================
-@st.cache_data(ttl=30)
-def cargar_datos_drive():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
-    # Lectura de credenciales desde Streamlit Secrets
+def conectar_drive():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_dict = dict(st.secrets["google_credentials"])
-    
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    service = build('sheets', 'v4', credentials=creds)
+    drive_service = build('drive', 'v3', credentials=creds)
+
+    query = "name contains 'Planificador General 2026' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get('files', [])
+
+    if not files:
+        st.error("❌ CRÍTICO: No se encontró 'Planificador General 2026' en Google Drive.")
+        st.stop()
+
+    spreadsheet_id = files[0]['id']
+    return service, spreadsheet_id
+
+service, spreadsheet_id = conectar_drive()
+
+# Cargar listas base (Alumnos y Ejercicios)
+def cargar_listas_base():
     try:
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        service = build('sheets', 'v4', credentials=creds)
-        drive_service = build('drive', 'v3', credentials=creds)
-
-        query = "name contains 'Planificador General 2026' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-        files = results.get('files', [])
-
-        if not files:
-            st.error("No se encontró el archivo 'Planificador General 2026' en Google Drive.")
-            st.stop()
-
-        spreadsheet_id = files[0]['id']
-
-        # Cargar Ejercicios
         res_ej = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="Ejercicios!A:B").execute()
         rows_ej = res_ej.get('values', [])
-        df_ejercicios = pd.DataFrame(rows_ej[1:], columns=[rows_ej[0][0], rows_ej[0][1]])
+        df_ejercicios = pd.DataFrame(rows_ej[1:], columns=[rows_ej[0][0], rows_ej[0][1]]) if len(rows_ej) > 1 else pd.DataFrame()
 
-        # Cargar Alumnos
         res_al = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="Alumnos!A:Z").execute()
         rows_al = res_al.get('values', [])
-        
         if rows_al:
             max_cols = max(len(row) for row in rows_al)
             rows_al_padded = [row + [''] * (max_cols - len(row)) for row in rows_al]
@@ -58,18 +53,18 @@ def cargar_datos_drive():
         else:
             df_alumnos = pd.DataFrame()
 
-        return service, spreadsheet_id, df_alumnos, df_ejercicios
-
+        return df_alumnos, df_ejercicios
     except Exception as e:
-        st.error(f"Error al conectar con Google Drive: {e}")
-        st.stop()
+        st.error(f"Error cargando listas: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
-service, spreadsheet_id, df_alumnos, df_ejercicios = cargar_datos_drive()
+df_alumnos, df_ejercicios = cargar_listas_base()
 
-# Limpieza de datos
-df_alumnos.columns = [str(c).strip() for c in df_alumnos.columns]
-col_grupo_raw = df_ejercicios.columns[0]
-col_ejercicio_raw = df_ejercicios.columns[1]
+if not df_alumnos.empty:
+    df_alumnos.columns = [str(c).strip() for c in df_alumnos.columns]
+
+col_grupo_raw = df_ejercicios.columns[0] if not df_ejercicios.empty else "Grupo"
+col_ejercicio_raw = df_ejercicios.columns[1] if not df_ejercicios.empty else "Ejercicio"
 
 def normalizar_grupo(texto):
     txt = str(texto).strip().capitalize()
@@ -77,19 +72,17 @@ def normalizar_grupo(texto):
         txt = txt[:-1]
     return txt
 
-df_ejercicios['Grupo_Norm'] = df_ejercicios[col_grupo_raw].apply(normalizar_grupo)
+if not df_ejercicios.empty:
+    df_ejercicios['Grupo_Norm'] = df_ejercicios[col_grupo_raw].apply(normalizar_grupo)
 
 dic_meses = {
-    "Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4,
-    "Mayo": 5, "Junio": 6, "Julio": 7, "Agosto": 8,
-    "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12
+    "Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4, "Mayo": 5, "Junio": 6,
+    "Julio": 7, "Agosto": 8, "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12
 }
 
 def obtener_semanas_del_mes(mes_nombre):
     num_mes = dic_meses.get(mes_nombre, 7)
-    anio_actual = 2026
-    cal = calendar.monthcalendar(anio_actual, num_mes)
-    return len(cal)
+    return len(calendar.monthcalendar(2026, num_mes))
 
 def col2letter(col_idx):
     result = ""
@@ -99,136 +92,133 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA DE RESPALDO HISTÓRICO Y PERSISTENTE DESDE DRIVE
+# LECTURA UNIVERSAL EN TIEMPO REAL DESDE GOOGLE DRIVE
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
-    sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheets = sheet_metadata.get('sheets', [])
-    
-    hojas_candidatas = []
-    for h in sheets:
-        titulo = h['properties']['title']
-        if mes_nombre.lower() in titulo.lower():
-            hojas_candidatas.append(titulo)
+    try:
+        sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheets = sheet_metadata.get('sheets', [])
+        
+        hojas_candidatas = [h['properties']['title'] for h in sheets if mes_nombre.lower() in h['properties']['title'].lower()]
+        if not hojas_candidatas:
+            return []
 
-    if not hojas_candidatas:
-        return []
+        semanas_mes = obtener_semanas_del_mes(mes_nombre)
+        frec_semanal = 3
+        total_dias = frec_semanal * semanas_mes
+        registros = []
 
-    semanas_mes = obtener_semanas_del_mes(mes_nombre)
-    frec_semanal = 3
-    total_dias = frec_semanal * semanas_mes
+        nombre_buscar = re.sub(r'\s+', ' ', nombre_alumno.strip().upper())
 
-    registros = []
-
-    for nombre_hoja_real in hojas_candidatas:
-        try:
+        for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{nombre_hoja_real}'!A1:AZ200"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:AZ300"
             ).execute()
             matriz = res_completo.get('values', [])
 
+            # 1. Buscar al alumno en cualquier celda de la hoja
             fila_alumno = -1
             for idx_f, fila in enumerate(matriz):
-                if len(fila) > 1 and str(fila[1]).strip().upper() == nombre_alumno.upper():
-                    fila_alumno = idx_f + 1
+                for val in fila:
+                    val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
+                    if nombre_buscar in val_clean and len(val_clean) > 2:
+                        fila_alumno = idx_f
+                        break
+                if fila_alumno != -1:
                     break
 
             if fila_alumno == -1:
                 continue
 
-            fila_ej_base = fila_alumno + 7
-            for idx_f in range(fila_alumno - 1, len(matriz)):
-                if any(str(c).strip().lower() == "ejercicio" for c in matriz[idx_f]):
-                    fila_ej_base = idx_f + 1
+            # 2. Localizar la fila "Ejercicio"
+            fila_ej_base = -1
+            col_ejercicio_detectada = 5
+
+            for idx_f in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
+                fila_curr = matriz[idx_f]
+                for idx_c, val_c in enumerate(fila_curr):
+                    if str(val_c).strip().lower() == "ejercicio":
+                        fila_ej_base = idx_f
+                        col_ejercicio_detectada = idx_c
+                        break
+                if fila_ej_base != -1:
                     break
 
-            fila_ejercicios_inicio = fila_ej_base + 1
-            col_inicio = 5  # Columna F
+            if fila_ej_base == -1:
+                fila_ej_base = fila_alumno + 7
 
+            fila_ejercicios_inicio = fila_ej_base + 1
+            col_inicio = col_ejercicio_detectada
+
+            # 3. Leer todos los ejercicios
             for d in range(1, total_dias + 1):
                 s_num = ((d - 1) // frec_semanal) + 1
                 d_num = ((d - 1) % frec_semanal) + 1
 
-                for fila_idx in range(10):
-                    idx_f_matriz = (fila_ejercicios_inicio - 1) + fila_idx
+                for fila_idx in range(15):
+                    idx_f_matriz = fila_ejercicios_inicio + fila_idx
                     if idx_f_matriz < len(matriz):
                         f_row = matriz[idx_f_matriz]
                         ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
                         p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
                         r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
-                        if ej and str(ej).strip() not in ["", "-- Seleccionar Ejercicio --"]:
+                        if ej and str(ej).strip() not in ["", "-- Seleccionar Ejercicio --", "Ejercicio", "None"]:
                             registros.append({
                                 "Semana": f"Semana {s_num}",
                                 "Día": f"Día {d_num}",
-                                "Ejercicio": ej,
-                                "Peso": p,
-                                "Series x Reps": r
+                                "Ejercicio": str(ej).strip(),
+                                "Peso": str(p).strip(),
+                                "Series x Reps": str(r).strip()
                             })
                 col_inicio += 3
 
             if registros:
                 break
-        except Exception:
-            continue
-
-    return registros
-
-# ==========================================
-# MEMORIA DE LA APLICACIÓN
-# ==========================================
-if "plan_datos" not in st.session_state:
-    st.session_state["plan_datos"] = {}
+        return registros
+    except Exception:
+        return []
 
 # ==========================================
-# MENÚ LATERAL
+# INTERFAZ DE NAVEGACIÓN
 # ==========================================
 st.sidebar.title("GRYMFIT App")
-modo_app = st.sidebar.radio(
-    "Navegación:",
-    ["Armar Planificación Mensual", "Ver Rutinas en Vivo (4 Bloques)"]
-)
+modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ver Rutinas en Vivo (4 Bloques)"])
 
-col_alumno = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
-col_frec = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else df_alumnos.columns[1]
-lista_alumnos = sorted(df_alumnos[col_alumno].dropna().unique().tolist())
+col_alumno = "Alumnos" if "Alumnos" in df_alumnos.columns else (df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
+col_frec = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+lista_alumnos = sorted(df_alumnos[col_alumno].dropna().unique().tolist()) if not df_alumnos.empty else []
 if "" in lista_alumnos:
     lista_alumnos.remove("")
 
-# ==========================================
-# MODALIDAD 1: ARMAR PLANIFICACIÓN
-# ==========================================
 if modo_app == "Armar Planificación Mensual":
     st.title("Armar Planificación Mensual")
-    
     c_al, c_mes, c_frec = st.columns([2, 1, 1])
 
     with c_al:
-        alumno_sel = st.selectbox("Alumno a Planificar:", lista_alumnos)
-
+        alumno_sel = st.selectbox("Alumno a Planificar:", lista_alumnos if lista_alumnos else ["Sin Alumnos"])
     with c_mes:
-        mes_sel = st.selectbox("Mes de Planificación:", list(dic_meses.keys()), index=6)
+        mes_sel = st.selectbox("Mes de Planificación:", list(dic_meses.keys()), index=7)
 
     semanas_mes = obtener_semanas_del_mes(mes_sel)
-
-    datos_al = df_alumnos[df_alumnos[col_alumno] == alumno_sel]
+    datos_al = df_alumnos[df_alumnos[col_alumno] == alumno_sel] if not df_alumnos.empty else pd.DataFrame()
     frec_semanal = 3
     if not datos_al.empty and col_frec in datos_al.columns:
-        val_frec = str(datos_al[col_frec].values[0])
-        nums = re.findall(r'\d+', val_frec)
+        nums = re.findall(r'\d+', str(datos_al[col_frec].values[0]))
         if nums:
             frec_semanal = int(nums[0])
 
     total_dias_mes = frec_semanal * semanas_mes
-
     with c_frec:
         st.metric("Total Días al Mes", f"{total_dias_mes} Días", delta=f"{semanas_mes} sem x {frec_semanal} días/sem")
 
     st.markdown("---")
 
-    grupos_unicos = sorted(df_ejercicios['Grupo_Norm'].dropna().unique().tolist())
+    grupos_unicos = sorted(df_ejercicios['Grupo_Norm'].dropna().unique().tolist()) if not df_ejercicios.empty else []
     grupos_opciones = ["Ninguno"] + grupos_unicos
+
+    if "plan_datos" not in st.session_state:
+        st.session_state["plan_datos"] = {}
 
     tabs_semanas = st.tabs([f"Semana {s}" for s in range(1, semanas_mes + 1)])
 
@@ -239,310 +229,212 @@ if modo_app == "Armar Planificación Mensual":
             
             for d_num, tab_dia in enumerate(tabs_dias, start=1):
                 key_dia = f"{alumno_sel}_{mes_sel}_S{s_num}_D{d_num}"
-                
                 if key_dia not in st.session_state["plan_datos"]:
                     st.session_state["plan_datos"][key_dia] = {}
 
                 with tab_dia:
                     st.markdown(f"#### Rutina: Semana {s_num} - Día {d_num}")
-                    
-                    st.markdown("**1. Grupos Musculares a trabajar:**")
                     cg1, cg2, cg3, cg4 = st.columns(4)
-                    
-                    with cg1:
-                        g1 = st.selectbox("Músculo 1", grupos_opciones, key=f"g1_{key_dia}")
-                    with cg2:
-                        g2 = st.selectbox("Músculo 2", grupos_opciones, key=f"g2_{key_dia}")
-                    with cg3:
-                        g3 = st.selectbox("Músculo 3", grupos_opciones, key=f"g3_{key_dia}")
-                    with cg4:
-                        g4 = st.selectbox("Músculo 4", grupos_opciones, key=f"g4_{key_dia}")
+                    with cg1: g1 = st.selectbox("Músculo 1", grupos_opciones, key=f"g1_{key_dia}")
+                    with cg2: g2 = st.selectbox("Músculo 2", grupos_opciones, key=f"g2_{key_dia}")
+                    with cg3: g3 = st.selectbox("Músculo 3", grupos_opciones, key=f"g3_{key_dia}")
+                    with cg4: g4 = st.selectbox("Músculo 4", grupos_opciones, key=f"g4_{key_dia}")
 
                     grupos_elegidos = [g for g in [g1, g2, g3, g4] if g != "Ninguno"]
-
-                    if grupos_elegidos:
-                        ejercicios_disponibles = df_ejercicios[
-                            df_ejercicios['Grupo_Norm'].isin(grupos_elegidos)
-                        ][col_ejercicio_raw].dropna().unique().tolist()
-                    else:
+                    if grupos_elegidos and not df_ejercicios.empty:
+                        ejercicios_disponibles = df_ejercicios[df_ejercicios['Grupo_Norm'].isin(grupos_elegidos)][col_ejercicio_raw].dropna().unique().tolist()
+                    elif not df_ejercicios.empty:
                         ejercicios_disponibles = df_ejercicios[col_ejercicio_raw].dropna().unique().tolist()
+                    else:
+                        ejercicios_disponibles = []
 
                     lista_ej_opciones = ["-- Seleccionar Ejercicio --"] + sorted(ejercicios_disponibles)
-
                     st.markdown("---")
-                    st.markdown("**2. Ejercicios:**")
 
                     for fila in range(1, 11):
                         c_ej, c_p, c_r = st.columns([2, 1, 1])
-                        
-                        with c_ej:
-                            ej_val = st.selectbox(f"Ejercicio {fila}", lista_ej_opciones, key=f"ej_{key_dia}_{fila}")
-                        with c_p:
-                            peso_val = st.text_input("Peso / Tiempo", key=f"p_{key_dia}_{fila}", placeholder="ej: 20 kg")
-                        with c_r:
-                            reps_val = st.text_input("Series x Reps", key=f"r_{key_dia}_{fila}", placeholder="ej: 4x12")
+                        with c_ej: ej_val = st.selectbox(f"Ejercicio {fila}", lista_ej_opciones, key=f"ej_{key_dia}_{fila}")
+                        with c_p: peso_val = st.text_input("Peso / Tiempo", key=f"p_{key_dia}_{fila}", placeholder="ej: 20 kg")
+                        with c_r: reps_val = st.text_input("Series x Reps", key=f"r_{key_dia}_{fila}", placeholder="ej: 4x12")
 
                         st.session_state["plan_datos"][key_dia][f"fila_{fila}"] = {
-                            "Alumno": alumno_sel,
-                            "Mes": mes_sel,
-                            "Semana": s_num,
-                            "Día": d_num,
-                            "Grupos": grupos_elegidos,
-                            "Ejercicio": ej_val,
-                            "Peso": peso_val,
-                            "Series_Reps": reps_val,
-                            "Frecuencia": frec_semanal
+                            "Alumno": alumno_sel, "Mes": mes_sel, "Semana": s_num, "Día": d_num,
+                            "Grupos": grupos_elegidos, "Ejercicio": ej_val, "Peso": peso_val, "Series_Reps": reps_val
                         }
 
     st.markdown("---")
     st.header(f"Resumen de {alumno_sel} ({mes_sel})")
 
-    # COMBINAR DATOS DE LA SESIÓN CON DATOS GUARDADOS EN DRIVE (RESPALDO COMPLETO)
+    datos_recuperados_drive = leer_plan_desde_drive(alumno_sel, mes_sel)
+    
     registros_finales = []
+    for dr in datos_recuperados_drive:
+        registros_finales.append({
+            "Alumno": alumno_sel, "Mes": mes_sel, "Semana": dr["Semana"],
+            "Día": dr["Día"], "Ejercicio": dr["Ejercicio"], "Peso": dr["Peso"], "Series/Reps": dr["Series x Reps"]
+        })
+
     for k_item, filas_dict in st.session_state["plan_datos"].items():
         for f_key, datos in filas_dict.items():
             if datos.get("Alumno") == alumno_sel and datos.get("Mes") == mes_sel:
                 if datos.get("Ejercicio") not in ["-- Seleccionar Ejercicio --", "", None]:
                     registros_finales.append({
-                        "Alumno": datos["Alumno"],
-                        "Mes": datos["Mes"],
-                        "Semana": f"Semana {datos['Semana']}",
-                        "Día": f"Día {datos['Día']}",
-                        "Ejercicio": datos["Ejercicio"],
-                        "Peso": datos["Peso"],
-                        "Series/Reps": datos["Series_Reps"]
+                        "Alumno": datos["Alumno"], "Mes": datos["Mes"],
+                        "Semana": f"Semana {datos['Semana']}", "Día": f"Día {datos['Día']}",
+                        "Ejercicio": datos["Ejercicio"], "Peso": datos["Peso"], "Series/Reps": datos["Series_Reps"]
                     })
 
-    if not registros_finales:
-        # Si la app se reinició, recupera los datos directamente de Google Drive
-        datos_recuperados = leer_plan_desde_drive(alumno_sel, mes_sel)
-        for dr in datos_recuperados:
-            registros_finales.append({
-                "Alumno": alumno_sel,
-                "Mes": mes_sel,
-                "Semana": dr["Semana"],
-                "Día": dr["Día"],
-                "Ejercicio": dr["Ejercicio"],
-                "Peso": dr["Peso"],
-                "Series/Reps": dr["Series x Reps"]
-            })
-
     if registros_finales:
-        df_resumen = pd.DataFrame(registros_finales)
+        df_resumen = pd.DataFrame(registros_finales).drop_duplicates(subset=["Semana", "Día", "Ejercicio"], keep="last")
         st.dataframe(df_resumen, use_container_width=True)
 
-        if st.button("Guardar Planificación en Google Drive", type="primary"):
-            try:
-                hoja_plantilla_origen = "Plan_julio"
-                hoja_app_destino = f"Plan_{mes_sel}_App"
+        if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
+            with st.spinner("⏳ Guardando planificación directamente en Google Drive..."):
+                try:
+                    hoja_app_destino = f"Plan_{mes_sel}_App"
 
-                sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-                sheets = sheet_metadata.get('sheets', [])
-                dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
+                    sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+                    sheets = sheet_metadata.get('sheets', [])
+                    dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-                if hoja_app_destino not in dict_hojas:
-                    source_id = dict_hojas.get(hoja_plantilla_origen)
-                    if source_id is None:
+                    if hoja_app_destino not in dict_hojas:
+                        id_plantilla = None
                         for title, s_id in dict_hojas.items():
-                            if "plan_julio" in title.lower():
-                                source_id = s_id
+                            if "plan" in title.lower() or mes_sel.lower() in title.lower():
+                                id_plantilla = s_id
                                 break
+                        if id_plantilla is None:
+                            id_plantilla = list(dict_hojas.values())[0]
 
-                    body_copy = {
-                        'requests': [{
-                            'duplicateSheet': {
-                                'sourceSheetId': source_id,
-                                'newSheetName': hoja_app_destino
-                            }
-                        }]
-                    }
-                    res_copy = service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_copy).execute()
-                    id_hoja_destino = res_copy['replies'][0]['duplicateSheet']['properties']['sheetId']
-                else:
-                    id_hoja_destino = dict_hojas[hoja_app_destino]
-
-                cols_necesarias = 6 + (total_dias_mes * 3) + 10
-                body_expand_cols = {
-                    'requests': [{
-                        'updateSheetProperties': {
-                            'properties': {
-                                'sheetId': id_hoja_destino,
-                                'gridProperties': {
-                                    'columnCount': max(100, cols_necesarias)
-                                }
-                            },
-                            'fields': 'gridProperties.columnCount'
-                        }
-                    }]
-                }
-                service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
-
-                res_completo = service.spreadsheets().values().get(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{hoja_app_destino}'!A1:AZ200"
-                ).execute()
-                matriz = res_completo.get('values', [])
-
-                filas_encabezado_ejercicio = []
-                for idx_f, fila in enumerate(matriz):
-                    for val_c in fila:
-                        if str(val_c).strip().lower() == "ejercicio":
-                            filas_encabezado_ejercicio.append(idx_f + 1)
-                            break
-
-                filas_control = [2, 43, 84, 125]
-                if len(filas_encabezado_ejercicio) >= 4:
-                    filas_control = [f - 7 for f in filas_encabezado_ejercicio[:4]]
-
-                res_b = service.spreadsheets().values().batchGet(
-                    spreadsheetId=spreadsheet_id,
-                    ranges=[f"'{hoja_app_destino}'!B{f}" for f in filas_control]
-                ).execute()
-                
-                value_ranges = res_b.get('valueRanges', [])
-                fila_control_alumno = -1
-                primer_slot_libre = -1
-
-                for idx, vr in enumerate(value_ranges):
-                    val = vr.get('values', [['']])[0][0].strip() if vr.get('values') else ""
-                    if val == alumno_sel:
-                        fila_control_alumno = filas_control[idx]
-                        break
-                    if val == "" and primer_slot_libre == -1:
-                        primer_slot_libre = filas_control[idx]
-
-                if fila_control_alumno == -1:
-                    fila_control_alumno = primer_slot_libre if primer_slot_libre != -1 else filas_control[0]
-
-                service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{hoja_app_destino}'!B{fila_control_alumno}:C{fila_control_alumno}",
-                    valueInputOption="USER_ENTERED",
-                    body={'values': [[alumno_sel, frec_semanal]]}
-                ).execute()
-
-                fila_ej_base = fila_control_alumno + 7
-                for f_ej in filas_encabezado_ejercicio:
-                    if f_ej > fila_control_alumno:
-                        fila_ej_base = f_ej
-                        break
-
-                fila_musculos_inicio = fila_ej_base - 4
-                fila_ejercicios_inicio = fila_ej_base + 1
-
-                requests_batch = []
-                col_inicio = 6  # Columna F
-
-                for d in range(1, total_dias_mes + 1):
-                    s_num = ((d - 1) // frec_semanal) + 1
-                    d_num = ((d - 1) % frec_semanal) + 1
-                    
-                    key_dia = f"{alumno_sel}_{mes_sel}_S{s_num}_D{d_num}"
-                    
-                    letra_col_ej = col2letter(col_inicio)
-                    letra_col_rep = col2letter(col_inicio + 2)
-
-                    ejercicios_dia = []
-                    grupos_dia = []
-
-                    if key_dia in st.session_state["plan_datos"]:
-                        filas_dict = st.session_state["plan_datos"][key_dia]
-                        
-                        for f_idx in range(1, 11):
-                            datos_f = filas_dict.get(f"fila_{f_idx}", {})
-                            ej = datos_f.get("Ejercicio", "")
-                            p = datos_f.get("Peso", "")
-                            r = datos_f.get("Series_Reps", "")
-                            if datos_f.get("Grupos"):
-                                grupos_dia = datos_f.get("Grupos")
-                            
-                            if ej not in ["-- Seleccionar Ejercicio --", "", None]:
-                                ejercicios_dia.append([ej, p, r])
-                            else:
-                                ejercicios_dia.append(["", "", ""])
+                        body_copy = {'requests': [{'duplicateSheet': {'sourceSheetId': id_plantilla, 'newSheetName': hoja_app_destino}}]}
+                        res_copy = service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_copy).execute()
+                        id_hoja_destino = res_copy['replies'][0]['duplicateSheet']['properties']['sheetId']
                     else:
-                        ejercicios_dia = [["", "", ""]] * 10
+                        id_hoja_destino = dict_hojas[hoja_app_destino]
 
-                    g_matriz = [[g] for g in grupos_dia] + [[""]] * (4 - len(grupos_dia))
-                    range_g = f"'{hoja_app_destino}'!{letra_col_ej}{fila_musculos_inicio}:{letra_col_ej}{fila_musculos_inicio+3}"
-                    requests_batch.append({'range': range_g, 'values': g_matriz[:4]})
+                    cols_necesarias = 6 + (total_dias_mes * 3) + 10
+                    body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
+                    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    range_ej = f"'{hoja_app_destino}'!{letra_col_ej}{fila_ejercicios_inicio}:{letra_col_rep}{fila_ejercicios_inicio+9}"
-                    requests_batch.append({'range': range_ej, 'values': ejercicios_dia})
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ200").execute()
+                    matriz = res_completo.get('values', [])
 
-                    col_inicio += 3
+                    filas_encabezado_ejercicio = [idx_f + 1 for idx_f, fila in enumerate(matriz) if any(str(val_c).strip().lower() == "ejercicio" for val_c in fila)]
+                    filas_control = [2, 43, 84, 125]
+                    if len(filas_encabezado_ejercicio) >= 4:
+                        filas_control = [f - 7 for f in filas_encabezado_ejercicio[:4]]
 
-                if requests_batch:
-                    service.spreadsheets().values().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={
-                            'valueInputOption': 'USER_ENTERED',
-                            'data': requests_batch
-                        }
+                    res_b = service.spreadsheets().values().batchGet(spreadsheetId=spreadsheet_id, ranges=[f"'{hoja_app_destino}'!B{f}" for f in filas_control]).execute()
+                    value_ranges = res_b.get('valueRanges', [])
+                    
+                    fila_control_alumno = -1
+                    primer_slot_libre = -1
+                    for idx, vr in enumerate(value_ranges):
+                        val = vr.get('values', [['']])[0][0].strip() if vr.get('values') else ""
+                        if val == alumno_sel:
+                            fila_control_alumno = filas_control[idx]
+                            break
+                        if val == "" and primer_slot_libre == -1:
+                            primer_slot_libre = filas_control[idx]
+
+                    if fila_control_alumno == -1:
+                        fila_control_alumno = primer_slot_libre if primer_slot_libre != -1 else filas_control[0]
+
+                    service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!B{fila_control_alumno}:C{fila_control_alumno}",
+                        valueInputOption="USER_ENTERED", body={'values': [[alumno_sel, frec_semanal]]}
                     ).execute()
 
-                st.cache_data.clear()
-                st.success(f"Planificación de {alumno_sel} guardada y respaldada en Google Drive")
+                    fila_ej_base = fila_control_alumno + 7
+                    for f_ej in filas_encabezado_ejercicio:
+                        if f_ej > fila_control_alumno:
+                            fila_ej_base = f_ej
+                            break
 
-            except Exception as error:
-                st.error(f"Error al guardar en Drive: {error}")
+                    fila_musculos_inicio = fila_ej_base - 4
+                    fila_ejercicios_inicio = fila_ej_base + 1
+                    col_inicio = 6  # Columna F
 
-# ==========================================
-# MODALIDAD 2: VER RUTINAS EN VIVO
-# ==========================================
+                    for d in range(1, total_dias_mes + 1):
+                        s_num = ((d - 1) // frec_semanal) + 1
+                        d_num = ((d - 1) % frec_semanal) + 1
+                        key_dia = f"{alumno_sel}_{mes_sel}_S{s_num}_D{d_num}"
+                        
+                        letra_col_ej = col2letter(col_inicio)
+                        letra_col_rep = col2letter(col_inicio + 2)
+
+                        ejercicios_dia = []
+                        grupos_dia = []
+
+                        if key_dia in st.session_state["plan_datos"]:
+                            filas_dict = st.session_state["plan_datos"][key_dia]
+                            for f_idx in range(1, 11):
+                                datos_f = filas_dict.get(f"fila_{f_idx}", {})
+                                ej = datos_f.get("Ejercicio", "")
+                                p = datos_f.get("Peso", "")
+                                r = datos_f.get("Series_Reps", "")
+                                if datos_f.get("Grupos"):
+                                    grupos_dia = datos_f.get("Grupos")
+                                
+                                if ej not in ["-- Seleccionar Ejercicio --", "", None]:
+                                    ejercicios_dia.append([ej, p, r])
+                                else:
+                                    ejercicios_dia.append(["", "", ""])
+                        else:
+                            ejercicios_dia = [["", "", ""]] * 10
+
+                        g_matriz = [[g] for g in grupos_dia] + [[""]] * (4 - len(grupos_dia))
+                        batch_dia = [
+                            {'range': f"'{hoja_app_destino}'!{letra_col_ej}{fila_musculos_inicio}:{letra_col_ej}{fila_musculos_inicio+3}", 'values': g_matriz[:4]},
+                            {'range': f"'{hoja_app_destino}'!{letra_col_ej}{fila_ejercicios_inicio}:{letra_col_rep}{fila_ejercicios_inicio+9}", 'values': ejercicios_dia}
+                        ]
+
+                        service.spreadsheets().values().batchUpdate(
+                            spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_dia}
+                        ).execute()
+                        col_inicio += 3
+
+                    st.balloons()
+                    st.success(f"✅ ¡Sincronizado! La rutina de {alumno_sel} ({mes_sel}) ya está guardada en Google Drive.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ ERROR AL GUARDAR: {error}")
+
 else:
     st.title("Consulta de Rutinas en Vivo (Gimnasio)")
     
-    mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=6)
-    
-    st.markdown("### Selecciona qué Alumno cargar en cada uno de los 4 Bloques:")
+    c_mes_v, c_ref = st.columns([3, 1])
+    with c_mes_v:
+        mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7)
+    with c_ref:
+        if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
+            st.rerun()
+
+    st.markdown("### Selecciona qué Alumno cargar en cada Bloque:")
     
     ca1, ca2, ca3, ca4 = st.columns(4)
-    with ca1:
-        al_v1 = st.selectbox("Bloque 1 - Alumno:", ["-- Seleccionar --"] + lista_alumnos, index=1 if len(lista_alumnos)>0 else 0)
-    with ca2:
-        al_v2 = st.selectbox("Bloque 2 - Alumno:", ["-- Seleccionar --"] + lista_alumnos, index=2 if len(lista_alumnos)>1 else 0)
-    with ca3:
-        al_v3 = st.selectbox("Bloque 3 - Alumno:", ["-- Seleccionar --"] + lista_alumnos, index=3 if len(lista_alumnos)>2 else 0)
-    with ca4:
-        al_v4 = st.selectbox("Bloque 4 - Alumno:", ["-- Seleccionar --"] + lista_alumnos, index=0)
+    with ca1: al_v1 = st.selectbox("Bloque 1:", ["-- Seleccionar --"] + lista_alumnos, index=1 if len(lista_alumnos)>0 else 0)
+    with ca2: al_v2 = st.selectbox("Bloque 2:", ["-- Seleccionar --"] + lista_alumnos, index=2 if len(lista_alumnos)>1 else 0)
+    with ca3: al_v3 = st.selectbox("Bloque 3:", ["-- Seleccionar --"] + lista_alumnos, index=3 if len(lista_alumnos)>2 else 0)
+    with ca4: al_v4 = st.selectbox("Bloque 4:", ["-- Seleccionar --"] + lista_alumnos, index=0)
 
     alumnos_a_ver = [a for a in [al_v1, al_v2, al_v3, al_v4] if a != "-- Seleccionar --"]
-
     st.markdown("---")
 
     if alumnos_a_ver:
         tabs_al_ver = st.tabs([f"{al}" for al in alumnos_a_ver])
-        
         for idx, tab_al_v in enumerate(tabs_al_ver):
             al_nombre = alumnos_a_ver[idx]
-            
             with tab_al_v:
-                st.subheader(f"Planificación Mensual: {al_nombre} ({mes_ver})")
+                st.subheader(f"Planificación: {al_nombre} ({mes_ver})")
                 
-                # BUSCA DIRECTAMENTE EL RESPALDO EN DRIVE Y EN MEMORIA LOCAL
-                ejercicios_alumno = []
-                for k_item, filas_dict in st.session_state["plan_datos"].items():
-                    for f_key, datos in filas_dict.items():
-                        if datos.get("Alumno") == al_nombre and datos.get("Mes") == mes_ver:
-                            if datos.get("Ejercicio") not in ["-- Seleccionar Ejercicio --", "", None]:
-                                ejercicios_alumno.append({
-                                    "Semana": f"Semana {datos['Semana']}",
-                                    "Día": f"Día {datos['Día']}",
-                                    "Ejercicio": datos["Ejercicio"],
-                                    "Peso": datos["Peso"],
-                                    "Series x Reps": datos["Series_Reps"]
-                                })
-
-                if not ejercicios_alumno:
-                    with st.spinner(f"Cargando respaldo desde Drive para {al_nombre}..."):
-                        ejercicios_alumno = leer_plan_desde_drive(al_nombre, mes_ver)
+                # CONSULTA DIRECTA Y EN VIVO A GOOGLE DRIVE
+                ejercicios_alumno = leer_plan_desde_drive(al_nombre, mes_ver)
 
                 if ejercicios_alumno:
                     df_al_v = pd.DataFrame(ejercicios_alumno)
                     semanas_unicas = sorted(df_al_v["Semana"].unique().tolist())
                     t_sems_v = st.tabs(semanas_unicas)
-                    
                     for sem_idx, sem_v in enumerate(semanas_unicas):
                         with t_sems_v[sem_idx]:
                             df_sem = df_al_v[df_al_v["Semana"] == sem_v][["Día", "Ejercicio", "Peso", "Series x Reps"]]
@@ -550,4 +442,4 @@ else:
                 else:
                     st.warning(f"No hay ninguna rutina registrada en Google Drive para {al_nombre} en {mes_ver}.")
     else:
-        st.info("Selecciona al menos un alumno en los buscadores superiores para visualizar su rutina.")
+        st.info("Selecciona un alumno para ver su rutina.")
