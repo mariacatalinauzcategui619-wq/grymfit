@@ -12,7 +12,7 @@ from googleapiclient.discovery import build
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
 
 # ==========================================
-# CONEXIÓN A GOOGLE DRIVE EN TIEMPO REAL (SIN MEMORIA TEMPORAL BLOQUEANTE)
+# CONEXIÓN DIRECTA A GOOGLE DRIVE
 # ==========================================
 def conectar_drive():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -37,7 +37,7 @@ def conectar_drive():
 
 service, spreadsheet_id = conectar_drive()
 
-# Cargar listas base (Alumnos y Ejercicios)
+# Cargar listas base
 def cargar_listas_base():
     try:
         res_ej = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="Ejercicios!A:B").execute()
@@ -92,9 +92,12 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA UNIVERSAL EN TIEMPO REAL DESDE GOOGLE DRIVE
+# LECTURA DE RESPALDO DESDE DRIVE (CORREGIDA)
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
+    if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
+        return []
+
     try:
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
@@ -108,7 +111,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_buscar = re.sub(r'\s+', ' ', nombre_alumno.strip().upper())
+        nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
@@ -116,7 +119,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             ).execute()
             matriz = res_completo.get('values', [])
 
-            # 1. Buscar al alumno en cualquier celda de la hoja
             fila_alumno = -1
             for idx_f, fila in enumerate(matriz):
                 for val in fila:
@@ -130,7 +132,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             if fila_alumno == -1:
                 continue
 
-            # 2. Localizar la fila "Ejercicio"
             fila_ej_base = -1
             col_ejercicio_detectada = 5
 
@@ -150,7 +151,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             fila_ejercicios_inicio = fila_ej_base + 1
             col_inicio = col_ejercicio_detectada
 
-            # 3. Leer todos los ejercicios
             for d in range(1, total_dias + 1):
                 s_num = ((d - 1) // frec_semanal) + 1
                 d_num = ((d - 1) % frec_semanal) + 1
@@ -180,7 +180,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         return []
 
 # ==========================================
-# INTERFAZ DE NAVEGACIÓN
+# INTERFAZ Y NAVEGACIÓN
 # ==========================================
 st.sidebar.title("GRYMFIT App")
 modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ver Rutinas en Vivo (4 Bloques)"])
@@ -405,7 +405,7 @@ else:
     
     c_mes_v, c_ref = st.columns([3, 1])
     with c_mes_v:
-        mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7)
+        mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7, key="mes_ver_vivo")
     with c_ref:
         if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
             st.rerun()
@@ -413,12 +413,13 @@ else:
     st.markdown("### Selecciona qué Alumno cargar en cada Bloque:")
     
     ca1, ca2, ca3, ca4 = st.columns(4)
-    with ca1: al_v1 = st.selectbox("Bloque 1:", ["-- Seleccionar --"] + lista_alumnos, index=1 if len(lista_alumnos)>0 else 0)
-    with ca2: al_v2 = st.selectbox("Bloque 2:", ["-- Seleccionar --"] + lista_alumnos, index=2 if len(lista_alumnos)>1 else 0)
-    with ca3: al_v3 = st.selectbox("Bloque 3:", ["-- Seleccionar --"] + lista_alumnos, index=3 if len(lista_alumnos)>2 else 0)
-    with ca4: al_v4 = st.selectbox("Bloque 4:", ["-- Seleccionar --"] + lista_alumnos, index=0)
+    with ca1: al_v1 = st.selectbox("Bloque 1:", ["-- Seleccionar --"] + lista_alumnos, key="b1_sel")
+    with ca2: al_v2 = st.selectbox("Bloque 2:", ["-- Seleccionar --"] + lista_alumnos, key="b2_sel")
+    with ca3: al_v3 = st.selectbox("Bloque 3:", ["-- Seleccionar --"] + lista_alumnos, key="b3_sel")
+    with ca4: al_v4 = st.selectbox("Bloque 4:", ["-- Seleccionar --"] + lista_alumnos, key="b4_sel")
 
-    alumnos_a_ver = [a for a in [al_v1, al_v2, al_v3, al_v4] if a != "-- Seleccionar --"]
+    # Mapeo directo y estricto entre selectores y pestañas visuales
+    alumnos_a_ver = [a for a in [al_v1, al_v2, al_v3, al_v4] if a and a != "-- Seleccionar --"]
     st.markdown("---")
 
     if alumnos_a_ver:
@@ -428,7 +429,6 @@ else:
             with tab_al_v:
                 st.subheader(f"Planificación: {al_nombre} ({mes_ver})")
                 
-                # CONSULTA DIRECTA Y EN VIVO A GOOGLE DRIVE
                 ejercicios_alumno = leer_plan_desde_drive(al_nombre, mes_ver)
 
                 if ejercicios_alumno:
@@ -442,4 +442,4 @@ else:
                 else:
                     st.warning(f"No hay ninguna rutina registrada en Google Drive para {al_nombre} en {mes_ver}.")
     else:
-        st.info("Selecciona un alumno para ver su rutina.")
+        st.info("Selecciona al menos un alumno en los bloques superiores para ver su rutina.")
