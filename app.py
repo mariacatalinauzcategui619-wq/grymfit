@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# BÚSQUEDA EXHAUSTIVA Y GLOBAL EN GOOGLE DRIVE
+# BÚSQUEDA EXHAUSTIVA DE CUALQUIER ALUMNO EN DRIVE
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -114,24 +114,22 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_real in hojas_candidatas:
-            # Leer rango extendido completo de la pestaña
+            # Escanear matriz completa hasta 2000 filas para cubrir a los 50 alumnos
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ500"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ2000"
             ).execute()
             matriz = res_completo.get('values', [])
 
-            # BÚSQUEDA EXHAUSTIVA DE TODAS LAS APARICIONES DEL ALUMNO
             for idx_f, fila in enumerate(matriz):
-                for idx_c_nombre, val in enumerate(fila):
+                for val in fila:
                     val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
                     if nombre_buscar in val_clean and len(val_clean) > 2:
-                        # Alumno encontrado, rastrear su bloque de ejercicios hacia abajo
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        # Buscar encabezado "Ejercicio" cercano hacia abajo
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
+                        # Buscar encabezado "Ejercicio" asociado a ese alumno
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_c, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() == "ejercicio":
@@ -320,22 +318,23 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ300").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ2000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_encabezado_ejercicio = [idx_f + 1 for idx_f, fila in enumerate(matriz) if any(str(val_c).strip().lower() == "ejercicio" for val_c in fila)]
-                    filas_control = [2, 43, 84, 125]
-                    if len(filas_encabezado_ejercicio) >= 4:
-                        filas_control = [f - 7 for f in filas_encabezado_ejercicio[:4]]
+                    # Maneja hasta 50 bloques para cubrir a todos los alumnos
+                    filas_control = [2 + (41 * i) for i in range(50)]
 
-                    res_b = service.spreadsheets().values().batchGet(spreadsheetId=spreadsheet_id, ranges=[f"'{hoja_app_destino}'!B{f}" for f in filas_control]).execute()
+                    res_b = service.spreadsheets().values().batchGet(
+                        spreadsheetId=spreadsheet_id, 
+                        ranges=[f"'{hoja_app_destino}'!B{f}" for f in filas_control]
+                    ).execute()
                     value_ranges = res_b.get('valueRanges', [])
                     
                     fila_control_alumno = -1
                     primer_slot_libre = -1
                     for idx, vr in enumerate(value_ranges):
                         val = vr.get('values', [['']])[0][0].strip() if vr.get('values') else ""
-                        if val == alumno_sel:
+                        if val.upper() == alumno_sel.upper():
                             fila_control_alumno = filas_control[idx]
                             break
                         if val == "" and primer_slot_libre == -1:
@@ -349,6 +348,8 @@ if modo_app == "Armar Planificación Mensual":
                         valueInputOption="USER_ENTERED", body={'values': [[alumno_sel, frec_semanal]]}
                     ).execute()
 
+                    filas_encabezado_ejercicio = [idx_f + 1 for idx_f, fila in enumerate(matriz) if any(str(val_c).strip().lower() == "ejercicio" for val_c in fila)]
+                    
                     fila_ej_base = fila_control_alumno + 7
                     for f_ej in filas_encabezado_ejercicio:
                         if f_ej > fila_control_alumno:
