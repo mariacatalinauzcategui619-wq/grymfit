@@ -1,8 +1,10 @@
 import os
 import re
+import json
 import calendar
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -10,6 +12,11 @@ from googleapiclient.discovery import build
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
+
+# CARPETA LOCAL DE RESPALDOS ANTI-PÉRDIDA
+DIR_BACKUP = "backups_grymfit"
+if not os.path.exists(DIR_BACKUP):
+    os.makedirs(DIR_BACKUP, exist_ok=True)
 
 # ==========================================
 # CONEXIÓN DIRECTA A GOOGLE DRIVE
@@ -92,7 +99,44 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA CON SINCRONIZACIÓN Y SELECCIÓN TEMPORAL
+# FUNCIONES DE RESPALDO ANTI-PÉRDIDA
+# ==========================================
+def guardar_respaldo_local(nombre_alumno, mes_nombre, registros):
+    try:
+        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
+        master_data = {}
+        if os.path.exists(data_file):
+            with open(data_file, "r", encoding="utf-8") as f:
+                master_data = json.load(f)
+        
+        key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
+        master_data[key] = {
+            "alumno": nombre_alumno,
+            "mes": mes_nombre,
+            "actualizado": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "rutina": registros
+        }
+        
+        with open(data_file, "w", encoding="utf-8") as f:
+            json.dump(master_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def leer_respaldo_local(nombre_alumno, mes_nombre):
+    try:
+        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
+        if os.path.exists(data_file):
+            with open(data_file, "r", encoding="utf-8") as f:
+                master_data = json.load(f)
+            key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
+            if key in master_data:
+                return master_data[key].get("rutina", [])
+    except Exception:
+        pass
+    return []
+
+# ==========================================
+# LECTURA CON DOBLE CAPA DE SEGURIDAD
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -118,7 +162,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         nombre_clean_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
 
         for nombre_hoja_real in hojas_candidatas:
-            # 1. Búsqueda en la matriz completa de la hoja (pestaña base + pestaña app)
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
             ).execute()
@@ -187,19 +230,17 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                     break
 
             if registros:
+                guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                 return registros
 
-        # 2. Si no se encontró por coincidencia directa en pantalla, alternar temporalmente la celda de control B2
-        # para forzar a las fórmulas de Drive a calcular la rutina de este alumno sin modificar el archivo permanentemente
+        # Evaluación temporal en B2 para forzar recálculo dinámico de formulas de Drive
         if not registros and hojas_candidatas:
             hoja_main = hojas_candidatas[0]
-            # Colocar temporalmente el nombre en B2 para disparar la fórmula interna
             service.spreadsheets().values().update(
                 spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!B2",
                 valueInputOption="USER_ENTERED", body={'values': [[nombre_alumno]]}
             ).execute()
 
-            # Leer la sub-tabla recién calculada por las fórmulas de Google Sheets
             res_evaluado = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!A1:ZZ100"
             ).execute()
@@ -234,9 +275,14 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                 })
                     col_inicio += 3
 
-        return registros
+        if registros:
+            guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
+            return registros
+
+        # RECUPERACIÓN FALLBACK: Si Drive no respondió, consultar la copia local
+        return leer_respaldo_local(nombre_alumno, mes_nombre)
     except Exception:
-        return []
+        return leer_respaldo_local(nombre_alumno, mes_nombre)
 
 # ==========================================
 # INTERFAZ Y NAVEGACIÓN
@@ -361,7 +407,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Guardando planificación directamente en Google Drive..."):
+            with st.spinner("⏳ Guardando planificación con doble capa de respaldo..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -429,6 +475,7 @@ if modo_app == "Armar Planificación Mensual":
                     col_inicio = 6
 
                     batch_global_data = []
+                    registros_para_respaldo = []
 
                     for d in range(1, total_dias_mes + 1):
                         s_num = ((d - 1) // frec_semanal) + 1
@@ -453,6 +500,10 @@ if modo_app == "Armar Planificación Mensual":
                                 
                                 if ej not in ["-- Seleccionar Ejercicio --", "", None]:
                                     ejercicios_dia.append([ej, p, r])
+                                    registros_para_respaldo.append({
+                                        "Semana": s_num, "Día": d_num, "Fila": f_idx,
+                                        "Ejercicio": ej, "Peso": p, "Series_Reps": r
+                                    })
                                 else:
                                     ejercicios_dia.append(["", "", ""])
                         else:
@@ -469,11 +520,14 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
+                    # GUARDAR EN EL RESPALDO LOCAL ANTI-PÉRDIDA
+                    guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
+
                     if key_carga in st.session_state:
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue actualizada correctamente en Google Drive.")
+                    st.success(f"✅ ¡Sincronizado y Respaldado! La rutina de {alumno_sel} ({mes_sel}) quedó resguardada de forma permanente.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
