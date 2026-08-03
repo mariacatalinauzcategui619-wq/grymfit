@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# ESCANEO Y BUSCADOR UNIVERSAL
+# MOTOR DE LECTURA ROBUSTO GLOBAL
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -102,17 +102,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
         
-        # Buscar todas las hojas candidatas para el mes seleccionado
         hojas_candidatas = [
             h['properties']['title'] for h in sheets 
             if mes_nombre.lower() in h['properties']['title'].lower()
         ]
-
-        if not hojas_candidatas:
-            hojas_candidatas = [
-                h['properties']['title'] for h in sheets 
-                if "plan" in h['properties']['title'].lower() or "app" in h['properties']['title'].lower()
-            ]
 
         if not hojas_candidatas:
             hojas_candidatas = [h['properties']['title'] for h in sheets]
@@ -122,11 +115,9 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        # Limpiar y normalizar el nombre a buscar
         nombre_clean_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
 
         for nombre_hoja_real in hojas_candidatas:
-            # Solicitar un rango extendido completo
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
             ).execute()
@@ -137,7 +128,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             max_c = max(len(r) for r in rows_matriz)
             matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
-            # BÚSQUEDA GLOBAL: Recorrer toda la matriz celda por celda
             for idx_f, fila in enumerate(matriz):
                 for idx_c_nombre, val in enumerate(fila):
                     val_clean = re.sub(r'[^A-Z0-9]', '', str(val).upper())
@@ -147,7 +137,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        # Buscar la cabecera 'Ejercicio' en las celdas inferiores asociadas
                         for idx_sub in range(fila_alumno, min(fila_alumno + 35, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_c, val_c in enumerate(fila_sub):
