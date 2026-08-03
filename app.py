@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA ROBUSTA DESDE DRIVE
+# BÚSQUEDA EXHAUSTIVA Y GLOBAL EN GOOGLE DRIVE
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -114,68 +114,65 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_real in hojas_candidatas:
+            # Leer rango extendido completo de la pestaña
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:AZ300"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ500"
             ).execute()
             matriz = res_completo.get('values', [])
 
-            fila_alumno = -1
+            # BÚSQUEDA EXHAUSTIVA DE TODAS LAS APARICIONES DEL ALUMNO
             for idx_f, fila in enumerate(matriz):
-                for val in fila:
+                for idx_c_nombre, val in enumerate(fila):
                     val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
                     if nombre_buscar in val_clean and len(val_clean) > 2:
+                        # Alumno encontrado, rastrear su bloque de ejercicios hacia abajo
                         fila_alumno = idx_f
-                        break
-                if fila_alumno != -1:
-                    break
+                        fila_ej_base = -1
+                        col_ejercicio_detectada = -1
 
-            if fila_alumno == -1:
-                continue
+                        # Buscar encabezado "Ejercicio" cercano hacia abajo
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
+                            fila_sub = matriz[idx_sub]
+                            for idx_c, val_c in enumerate(fila_sub):
+                                if str(val_c).strip().lower() == "ejercicio":
+                                    fila_ej_base = idx_sub
+                                    col_ejercicio_detectada = idx_c
+                                    break
+                            if fila_ej_base != -1:
+                                break
 
-            fila_ej_base = -1
-            col_ejercicio_detectada = 5
+                        if fila_ej_base == -1:
+                            fila_ej_base = fila_alumno + 7
+                            col_ejercicio_detectada = 5
 
-            for idx_f in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
-                fila_curr = matriz[idx_f]
-                for idx_c, val_c in enumerate(fila_curr):
-                    if str(val_c).strip().lower() == "ejercicio":
-                        fila_ej_base = idx_f
-                        col_ejercicio_detectada = idx_c
-                        break
-                if fila_ej_base != -1:
-                    break
+                        fila_ejercicios_inicio = fila_ej_base + 1
+                        col_inicio = col_ejercicio_detectada
 
-            if fila_ej_base == -1:
-                fila_ej_base = fila_alumno + 7
+                        for d in range(1, total_dias + 1):
+                            s_num = ((d - 1) // frec_semanal) + 1
+                            d_num = ((d - 1) % frec_semanal) + 1
 
-            fila_ejercicios_inicio = fila_ej_base + 1
-            col_inicio = col_ejercicio_detectada
+                            for fila_idx in range(10):
+                                idx_f_matriz = fila_ejercicios_inicio + fila_idx
+                                if idx_f_matriz < len(matriz):
+                                    f_row = matriz[idx_f_matriz]
+                                    ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
+                                    p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
+                                    r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
-            for d in range(1, total_dias + 1):
-                s_num = ((d - 1) // frec_semanal) + 1
-                d_num = ((d - 1) % frec_semanal) + 1
+                                    if ej and str(ej).strip() not in ["", "-- Seleccionar Ejercicio --", "Ejercicio", "None"]:
+                                        registros.append({
+                                            "Semana": s_num,
+                                            "Día": d_num,
+                                            "Fila": fila_idx + 1,
+                                            "Ejercicio": str(ej).strip(),
+                                            "Peso": str(p).strip(),
+                                            "Series_Reps": str(r).strip()
+                                        })
+                            col_inicio += 3
 
-                for fila_idx in range(10):
-                    idx_f_matriz = fila_ejercicios_inicio + fila_idx
-                    if idx_f_matriz < len(matriz):
-                        f_row = matriz[idx_f_matriz]
-                        ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
-                        p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
-                        r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
-
-                        if ej and str(ej).strip() not in ["", "-- Seleccionar Ejercicio --", "Ejercicio", "None"]:
-                            registros.append({
-                                "Semana": s_num,
-                                "Día": d_num,
-                                "Fila": fila_idx + 1,
-                                "Ejercicio": str(ej).strip(),
-                                "Peso": str(p).strip(),
-                                "Series_Reps": str(r).strip()
-                            })
-                col_inicio += 3
-
-            if registros:
-                break
+                        if registros:
+                            return registros
         return registros
     except Exception:
         return []
@@ -311,7 +308,6 @@ if modo_app == "Armar Planificación Mensual":
                     sheets = sheet_metadata.get('sheets', [])
                     dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-                    # TRABAJA SOBRE LA MISMA HOJA SIN CREAR PESTAÑAS DE BACKUP
                     if hoja_app_destino not in dict_hojas:
                         id_plantilla = list(dict_hojas.values())[0]
                         body_copy = {'requests': [{'duplicateSheet': {'sourceSheetId': id_plantilla, 'newSheetName': hoja_app_destino}}]}
@@ -324,7 +320,7 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ200").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ300").execute()
                     matriz = res_completo.get('values', [])
 
                     filas_encabezado_ejercicio = [idx_f + 1 for idx_f, fila in enumerate(matriz) if any(str(val_c).strip().lower() == "ejercicio" for val_c in fila)]
@@ -363,7 +359,6 @@ if modo_app == "Armar Planificación Mensual":
                     fila_ejercicios_inicio = fila_ej_base + 1
                     col_inicio = 6
 
-                    # ENVÍO MASIVO EN 1 SOLA PETICIÓN (RÁPIDO Y SEGURO)
                     batch_global_data = []
 
                     for d in range(1, total_dias_mes + 1):
@@ -409,7 +404,7 @@ if modo_app == "Armar Planificación Mensual":
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue actualizada en la misma hoja de Google Drive.")
+                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue actualizada correctamente en Google Drive.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
