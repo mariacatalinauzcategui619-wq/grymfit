@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# BÚSQUEDA EXHAUSTIVA DE CUALQUIER ALUMNO EN DRIVE
+# LECTURA DE BÚSQUEDA ROBUSTA E INTELIGENTE
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -102,9 +102,15 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
         
+        # Primero buscar pestañas que coincidan con el mes
         hojas_candidatas = [h['properties']['title'] for h in sheets if mes_nombre.lower() in h['properties']['title'].lower()]
+        
+        # Si no hay coincidencias exactas por nombre de mes, buscar en TODAS las pestañas que contengan la palabra "plan" o "app"
         if not hojas_candidatas:
-            return []
+            hojas_candidatas = [h['properties']['title'] for h in sheets if "plan" in h['properties']['title'].lower() or "app" in h['properties']['title'].lower()]
+
+        if not hojas_candidatas:
+            hojas_candidatas = [h['properties']['title'] for h in sheets]
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = 3
@@ -114,25 +120,32 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_real in hojas_candidatas:
-            # Escanear matriz completa hasta 2000 filas para cubrir a los 50 alumnos
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ2000"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ1000"
             ).execute()
-            matriz = res_completo.get('values', [])
+            rows_matriz = res_completo.get('values', [])
+            if not rows_matriz:
+                continue
+
+            # Normalizar matriz a un ancho uniforme (para evitar saltos por celdas vacías)
+            max_c = max(len(r) for r in rows_matriz)
+            matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
             for idx_f, fila in enumerate(matriz):
-                for val in fila:
+                for idx_c_nombre, val in enumerate(fila):
                     val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
+                    
+                    # Coincidencia flexible de nombre de alumno
                     if nombre_buscar in val_clean and len(val_clean) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        # Buscar encabezado "Ejercicio" asociado a ese alumno
+                        # Buscar la palabra 'Ejercicio' cerca del alumno (hacia abajo)
                         for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_c, val_c in enumerate(fila_sub):
-                                if str(val_c).strip().lower() == "ejercicio":
+                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
                                     fila_ej_base = idx_sub
                                     col_ejercicio_detectada = idx_c
                                     break
@@ -150,7 +163,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
 
-                            for fila_idx in range(10):
+                            for fila_idx in range(12):
                                 idx_f_matriz = fila_ejercicios_inicio + fila_idx
                                 if idx_f_matriz < len(matriz):
                                     f_row = matriz[idx_f_matriz]
@@ -158,12 +171,13 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                     p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
                                     r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
-                                    if ej and str(ej).strip() not in ["", "-- Seleccionar Ejercicio --", "Ejercicio", "None"]:
+                                    ej_str = str(ej).strip()
+                                    if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
                                         registros.append({
                                             "Semana": s_num,
                                             "Día": d_num,
                                             "Fila": fila_idx + 1,
-                                            "Ejercicio": str(ej).strip(),
+                                            "Ejercicio": ej_str,
                                             "Peso": str(p).strip(),
                                             "Series_Reps": str(r).strip()
                                         })
@@ -321,7 +335,6 @@ if modo_app == "Armar Planificación Mensual":
                     res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ2000").execute()
                     matriz = res_completo.get('values', [])
 
-                    # Maneja hasta 50 bloques para cubrir a todos los alumnos
                     filas_control = [2 + (41 * i) for i in range(50)]
 
                     res_b = service.spreadsheets().values().batchGet(
