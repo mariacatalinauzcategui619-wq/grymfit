@@ -1,7 +1,6 @@
 import os
 import re
 import calendar
-import datetime
 import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
@@ -82,7 +81,7 @@ dic_meses = {
 }
 
 def obtener_semanas_del_mes(mes_nombre):
-    num_mes = dic_meses.get(mes_nombre, 7)
+    num_mes = dic_meses.get(mes_nombre, 8)
     return len(calendar.monthcalendar(2026, num_mes))
 
 def col2letter(col_idx):
@@ -304,7 +303,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Creando respaldo de seguridad y guardando en Google Drive..."):
+            with st.spinner("⏳ Guardando planificación directamente en Google Drive..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -312,9 +311,7 @@ if modo_app == "Armar Planificación Mensual":
                     sheets = sheet_metadata.get('sheets', [])
                     dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-                    # ==========================================
-                    # CREACIÓN DE HOJA Y RESPALDO AUTOMÁTICO
-                    # ==========================================
+                    # TRABAJA SOBRE LA MISMA HOJA SIN CREAR PESTAÑAS DE BACKUP
                     if hoja_app_destino not in dict_hojas:
                         id_plantilla = list(dict_hojas.values())[0]
                         body_copy = {'requests': [{'duplicateSheet': {'sourceSheetId': id_plantilla, 'newSheetName': hoja_app_destino}}]}
@@ -322,10 +319,6 @@ if modo_app == "Armar Planificación Mensual":
                         id_hoja_destino = res_copy['replies'][0]['duplicateSheet']['properties']['sheetId']
                     else:
                         id_hoja_destino = dict_hojas[hoja_app_destino]
-                        # Generar respaldo de seguridad antes de modificar la hoja existente
-                        nombre_backup = f"Backup_{mes_sel}_{datetime.datetime.now().strftime('%d%m_%H%M')}"
-                        body_backup = {'requests': [{'duplicateSheet': {'sourceSheetId': id_hoja_destino, 'newSheetName': nombre_backup}}]}
-                        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_backup).execute()
 
                     cols_necesarias = 6 + (total_dias_mes * 3) + 10
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
@@ -370,9 +363,7 @@ if modo_app == "Armar Planificación Mensual":
                     fila_ejercicios_inicio = fila_ej_base + 1
                     col_inicio = 6
 
-                    # ==========================================
-                    # BATCH UPDATE GLOBAL (ENVÍO EN 1 SOLA PETICIÓN)
-                    # ==========================================
+                    # ENVÍO MASIVO EN 1 SOLA PETICIÓN (RÁPIDO Y SEGURO)
                     batch_global_data = []
 
                     for d in range(1, total_dias_mes + 1):
@@ -410,7 +401,6 @@ if modo_app == "Armar Planificación Mensual":
                         
                         col_inicio += 3
 
-                    # Ejecución unificada de todo el mes
                     service.spreadsheets().values().batchUpdate(
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
@@ -419,7 +409,7 @@ if modo_app == "Armar Planificación Mensual":
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Guardado seguro e instantáneo! Se generó una copia de respaldo y la rutina de {alumno_sel} ({mes_sel}) quedó registrada.")
+                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue actualizada en la misma hoja de Google Drive.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
