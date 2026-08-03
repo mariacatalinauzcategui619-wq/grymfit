@@ -91,33 +91,20 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
-# ==========================================
-# OBTENCIÓN DE FRECUENCIA ULTRA ROBUSTA
-# ==========================================
+def normalizar_cadena(texto):
+    return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
+
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
         return 4
     
-    col_al = None
-    for c in df_alumnos.columns:
-        if "alumno" in str(c).lower():
-            col_al = c
-            break
-    if not col_al:
-        col_al = df_alumnos.columns[0]
+    col_al = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0])
+    col_fr = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0])
 
-    col_fr = None
-    for c in df_alumnos.columns:
-        if "frecuencia" in str(c).lower():
-            col_fr = c
-            break
-    if not col_fr:
-        col_fr = df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0]
-
-    target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+    target_clean = normalizar_cadena(nombre_alumno)
     
     for idx, row in df_alumnos.iterrows():
-        al_val = re.sub(r'[^A-Z0-9]', '', str(row[col_al]).upper())
+        al_val = normalizar_cadena(row[col_al])
         if target_clean == al_val and len(target_clean) > 2:
             val_frec = str(row[col_fr])
             nums = re.findall(r'\d+', val_frec)
@@ -126,10 +113,10 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 4
 
 # ==========================================
-# MOTOR DE LECTURA AUTÓNOMO UNIVERSAL
+# MOTOR DE BÚSQUEDA Y EVALUACIÓN DINÁMICA
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
-    if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
+    if not nombre_alumno or str(nombre_alumno).strip() in ["-- Seleccionar --", "", "None"]:
         return []
 
     try:
@@ -146,11 +133,11 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
-        total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+        nombre_target = normalizar_cadena(nombre_alumno)
 
+        # 1. BÚSQUEDA DIRECTA EN TODA LA MATRIZ (Pestañas App o Directas)
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
@@ -164,9 +151,9 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_str = re.sub(r'[^A-Z0-9]', '', str(val).upper())
+                    val_clean = normalizar_cadena(val)
                     
-                    if nombre_target == val_str and len(val_str) > 2:
+                    if nombre_target == val_clean and len(val_clean) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
@@ -188,9 +175,12 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
-                        for d in range(1, total_dias + 1):
-                            s_num = ((d - 1) // frec_semanal) + 1
-                            d_num = ((d - 1) % frec_semanal) + 1
+                        total_bloques = semanas_mes * frec_semanal
+                        bloque_count = 0
+
+                        while col_inicio < max_c - 1 and bloque_count < total_bloques:
+                            s_num = (bloque_count // frec_semanal) + 1
+                            d_num = (bloque_count % frec_semanal) + 1
 
                             for fila_idx in range(12):
                                 idx_f_matriz = fila_ejercicios_inicio + fila_idx
@@ -211,10 +201,62 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                                 "Peso": str(p).strip(),
                                                 "Series_Reps": str(r).strip()
                                             })
+
                             col_inicio += 3
+                            bloque_count += 1
 
                         if registros:
                             return registros
+
+        # 2. EVALUACIÓN DINÁMICA SI EL ALUMNO ESTABA "OCULTO" EN EL DESPLEGABLE DEL DRIVE
+        if not registros and hojas_candidatas:
+            hoja_main = hojas_candidatas[0]
+            # Seleccionar dinámicamente al alumno en la celda B2 para recalcular formulas
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!B2",
+                valueInputOption="USER_ENTERED", body={'values': [[nombre_alumno]]}
+            ).execute()
+
+            res_evaluado = service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!A1:ZZ200"
+            ).execute()
+            rows_m = res_evaluado.get('values', [])
+            if rows_m:
+                max_c2 = max(len(r) for r in rows_m)
+                matriz2 = [r + [''] * (max_c2 - len(r)) for r in rows_m]
+                col_inicio = 5
+                fila_ejercicios_inicio = 8
+
+                total_bloques = semanas_mes * frec_semanal
+                bloque_count = 0
+
+                while col_inicio < max_c2 - 1 and bloque_count < total_bloques:
+                    s_num = (bloque_count // frec_semanal) + 1
+                    d_num = (bloque_count % frec_semanal) + 1
+
+                    for fila_idx in range(12):
+                        idx_f_matriz = fila_ejercicios_inicio + fila_idx
+                        if idx_f_matriz < len(matriz2):
+                            f_row = matriz2[idx_f_matriz]
+                            ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
+                            p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
+                            r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
+
+                            ej_str = str(ej).strip()
+                            if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
+                                if not re.match(r'^(semana|día|dia)\s*\d+', ej_str.lower()):
+                                    registros.append({
+                                        "Semana": s_num,
+                                        "Día": d_num,
+                                        "Fila": fila_idx + 1,
+                                        "Ejercicio": ej_str,
+                                        "Peso": str(p).strip(),
+                                        "Series_Reps": str(r).strip()
+                                    })
+
+                    col_inicio += 3
+                    bloque_count += 1
+
         return registros
     except Exception:
         return []
@@ -225,8 +267,8 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 st.sidebar.title("GRYMFIT App")
 modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ver Rutinas en Vivo (4 Bloques)"])
 
-col_alumno = "Alumnos" if "Alumnos" in df_alumnos.columns else (df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
-col_frec = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+col_alumno = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
+col_frec = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
 
 raw_alumnos = df_alumnos[col_alumno].dropna().tolist() if not df_alumnos.empty else []
 lista_alumnos = sorted(list(set([str(a).strip() for a in raw_alumnos if str(a).strip() != ""])))
