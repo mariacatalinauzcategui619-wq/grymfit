@@ -37,8 +37,7 @@ def conectar_drive():
 
 service, spreadsheet_id = conectar_drive()
 
-# Cargar listas base
-@st.cache_data(ttl=30)
+# Cargar listas base sin caché para sincronización inmediata
 def cargar_listas_base():
     try:
         res_ej = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="Ejercicios!A:B").execute()
@@ -109,7 +108,7 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# MOTOR DE LECTURA ROBUSTO MULTICAPA
+# MOTOR DE LECTURA POR COINCIDENCIA EXACTA UNÍVOCA
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -135,6 +134,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         total_dias = frec_semanal * semanas_mes
         registros = []
 
+        # CADENA EXACTA COMPLETA
         nombre_exacto_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_lectura in hojas_a_probar:
@@ -152,6 +152,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                 for idx_c, val in enumerate(fila):
                     val_exacto = re.sub(r'\s+', ' ', str(val).strip().upper())
                     
+                    # COMPARACIÓN ESTRICTA (IGUALDAD ABSOLUTA)
                     if nombre_exacto_target == val_exacto:
                         fila_alumno = idx_f
                         fila_ej_base = -1
@@ -432,7 +433,6 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
-                    st.cache_data.clear()
                     if key_carga in st.session_state:
                         del st.session_state[key_carga]
 
@@ -450,7 +450,6 @@ else:
         mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7, key="mes_ver_vivo")
     with c_ref:
         if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
-            st.cache_data.clear()
             st.rerun()
 
     st.markdown("### Selecciona qué Alumno cargar en cada Bloque:")
@@ -461,7 +460,6 @@ else:
     with ca3: al_v3 = st.selectbox("Bloque 3:", ["-- Seleccionar --"] + lista_alumnos, key="b3_sel")
     with ca4: al_v4 = st.selectbox("Bloque 4:", ["-- Seleccionar --"] + lista_alumnos, key="b4_sel")
 
-    # Mapeo corregido de selecciones de bloques
     alumnos_seleccionados = [a for a in [al_v1, al_v2, al_v3, al_v4] if a and a != "-- Seleccionar --"]
     st.markdown("---")
 
