@@ -91,22 +91,28 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
+# ==========================================
+# OBTENCIÓN AUTOMÁTICA DE FRECUENCIA PARA LOS 50+ ALUMNOS
+# ==========================================
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
         return 3
     col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
     col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
     
-    target_clean = str(nombre_alumno).strip().upper()
-    match_al = df_alumnos[df_alumnos[col_al].astype(str).str.strip().str.upper() == target_clean]
-    if not match_al.empty and col_fr in match_al.columns:
-        nums = re.findall(r'\d+', str(match_al[col_fr].values[0]))
-        if nums:
-            return int(nums[0])
+    target_clean = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
+    
+    for idx, row in df_alumnos.iterrows():
+        al_val = re.sub(r'\s+', ' ', str(row[col_al]).strip().upper())
+        if target_clean == al_val:
+            val_frec = str(row[col_fr])
+            nums = re.findall(r'\d+', val_frec)
+            if nums:
+                return int(nums[0])
     return 3
 
 # ==========================================
-# MOTOR DE LECTURA AUTÓNOMO DE DÍAS Y RUTINAS
+# MOTOR DE LECTURA AUTÓNOMO UNIVERSAL
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -126,9 +132,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
+        total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_target = str(nombre_alumno).strip().upper()
+        nombre_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
@@ -143,26 +150,19 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_str = str(val).strip().upper()
+                    val_str = re.sub(r'\s+', ' ', str(val).strip().upper())
                     
                     if nombre_target == val_str:
                         fila_alumno = idx_f
                         fila_ej_base = fila_alumno + 7
-                        
-                        # Escanear dinámicamente hasta 30 columnas a la derecha (cobertura total de días del mes)
                         col_inicio = 5
-                        bloque_idx = 0
-                        
-                        while col_inicio < max_c - 2 and bloque_idx < 30:
-                            s_num = (bloque_idx // frec_semanal) + 1
-                            d_num = (bloque_idx % frec_semanal) + 1
-                            
-                            if s_num > semanas_mes:
-                                break
 
-                            dias_encontrados_en_bloque = False
+                        # Escanear el número exacto de días según su frecuencia (3, 4 o 5 días)
+                        for d in range(1, total_dias + 1):
+                            s_num = ((d - 1) // frec_semanal) + 1
+                            d_num = ((d - 1) % frec_semanal) + 1
 
-                            for fila_idx in range(12):
+                            for fila_idx in range(10):
                                 idx_f_matriz = fila_ej_base + 1 + fila_idx
                                 if idx_f_matriz < len(matriz):
                                     f_row = matriz[idx_f_matriz]
@@ -181,10 +181,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                                 "Peso": str(p).strip(),
                                                 "Series_Reps": str(r).strip()
                                             })
-                                            dias_encontrados_en_bloque = True
-
                             col_inicio += 3
-                            bloque_idx += 1
 
                         if registros:
                             return registros
@@ -200,9 +197,9 @@ modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ve
 
 col_alumno = "Alumnos" if "Alumnos" in df_alumnos.columns else (df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
 col_frec = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
-lista_alumnos = sorted(df_alumnos[col_alumno].dropna().unique().tolist()) if not df_alumnos.empty else []
-if "" in lista_alumnos:
-    lista_alumnos.remove("")
+
+raw_alumnos = df_alumnos[col_alumno].dropna().tolist() if not df_alumnos.empty else []
+lista_alumnos = sorted(list(set([str(a).strip() for a in raw_alumnos if str(a).strip() != ""])))
 
 if modo_app == "Armar Planificación Mensual":
     st.title("Armar Planificación Mensual")
