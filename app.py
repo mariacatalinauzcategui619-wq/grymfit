@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA COMPLETA SIN IMPORTAR SELECCIÓN EN DRIVE
+# LECTURA POR MES Y ALUMNO
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -102,14 +102,14 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
         
-        # Filtrar pestañas relacionadas con el mes o genéricas de la App
-        hojas_candidatas = [h['properties']['title'] for h in sheets if mes_nombre.lower() in h['properties']['title'].lower()]
-        
-        if not hojas_candidatas:
-            hojas_candidatas = [h['properties']['title'] for h in sheets if "plan" in h['properties']['title'].lower() or "app" in h['properties']['title'].lower()]
+        # Filtrar STRICTAMENTE pestañas correspondientes al mes seleccionado
+        hojas_candidatas = [
+            h['properties']['title'] for h in sheets 
+            if mes_nombre.lower() in h['properties']['title'].lower()
+        ]
 
         if not hojas_candidatas:
-            hojas_candidatas = [h['properties']['title'] for h in sheets]
+            return []
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = 3
@@ -129,7 +129,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             max_c = max(len(r) for r in rows_matriz)
             matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
-            # Buscar todas las celdas donde aparezca el nombre del alumno
+            # Buscar al alumno en la hoja del mes
             for idx_f, fila in enumerate(matriz):
                 for idx_c_nombre, val in enumerate(fila):
                     val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
@@ -139,7 +139,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        # Buscar encabezado "Ejercicio" en las 25 filas posteriores
+                        # Buscar la palabra 'Ejercicio' en las celdas cercanas del alumno
                         for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_c, val_c in enumerate(fila_sub):
