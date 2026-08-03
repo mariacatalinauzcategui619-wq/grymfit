@@ -1,10 +1,8 @@
 import os
 import re
-import json
 import calendar
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -12,11 +10,6 @@ from googleapiclient.discovery import build
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
-
-# CARPETA LOCAL DE RESPALDOS ANTI-PÉRDIDA
-DIR_BACKUP = "backups_grymfit"
-if not os.path.exists(DIR_BACKUP):
-    os.makedirs(DIR_BACKUP, exist_ok=True)
 
 # ==========================================
 # CONEXIÓN DIRECTA A GOOGLE DRIVE
@@ -104,10 +97,10 @@ def obtener_frecuencia_alumno(nombre_alumno):
     col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
     col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
     
-    target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+    target_clean = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
     for idx, row in df_alumnos.iterrows():
-        al_val = re.sub(r'[^A-Z0-9]', '', str(row[col_al]).upper())
-        if target_clean == al_val or (target_clean in al_val and len(target_clean) > 3):
+        al_val = re.sub(r'\s+', ' ', str(row[col_al]).strip().upper())
+        if target_clean == al_val:
             val_frec = str(row[col_fr])
             nums = re.findall(r'\d+', val_frec)
             if nums:
@@ -115,190 +108,95 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# FUNCIONES DE RESPALDO ANTI-PÉRDIDA
-# ==========================================
-def guardar_respaldo_local(nombre_alumno, mes_nombre, registros):
-    try:
-        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
-        master_data = {}
-        if os.path.exists(data_file):
-            with open(data_file, "r", encoding="utf-8") as f:
-                master_data = json.load(f)
-        
-        key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
-        master_data[key] = {
-            "alumno": nombre_alumno,
-            "mes": mes_nombre,
-            "actualizado": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "rutina": registros
-        }
-        
-        with open(data_file, "w", encoding="utf-8") as f:
-            json.dump(master_data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def leer_respaldo_local(nombre_alumno, mes_nombre):
-    try:
-        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
-        if os.path.exists(data_file):
-            with open(data_file, "r", encoding="utf-8") as f:
-                master_data = json.load(f)
-            key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
-            if key in master_data:
-                return master_data[key].get("rutina", [])
-    except Exception:
-        pass
-    return []
-
-# ==========================================
-# LECTURA CON DOBLE CAPA Y FRECUENCIA EXACTA
+# LECTURA CON COINCIDENCIA EXACTA SIN CRUCES
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
         return []
 
     try:
+        hoja_app_destino = f"Plan_{mes_nombre}_App"
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
-        
-        hojas_candidatas = [
-            h['properties']['title'] for h in sheets 
-            if mes_nombre.lower() in h['properties']['title'].lower()
-        ]
+        dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-        if not hojas_candidatas:
-            hojas_candidatas = [h['properties']['title'] for h in sheets]
+        # Trabajar sobre la hoja aislada de la App para evitar cruce de formulas
+        nombre_hoja_lectura = hoja_app_destino if hoja_app_destino in dict_hojas else mes_nombre
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_clean_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+        nombre_exacto_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
-        for nombre_hoja_real in hojas_candidatas:
-            res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
-            ).execute()
-            rows_matriz = res_completo.get('values', [])
-            if not rows_matriz:
-                continue
+        res_completo = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_lectura}'!A1:ZZ5000"
+        ).execute()
+        rows_matriz = res_completo.get('values', [])
+        if not rows_matriz:
+            return []
 
-            max_c = max(len(r) for r in rows_matriz)
-            matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
+        max_c = max(len(r) for r in rows_matriz)
+        matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
-            encontrado = False
-            for idx_f, fila in enumerate(matriz):
-                for idx_c, val in enumerate(fila):
-                    val_clean = re.sub(r'[^A-Z0-9]', '', str(val).upper())
-                    
-                    if nombre_clean_target in val_clean and len(val_clean) > 2:
-                        fila_alumno = idx_f
-                        fila_ej_base = -1
-                        col_ejercicio_detectada = -1
+        for idx_f, fila in enumerate(matriz):
+            for idx_c, val in enumerate(fila):
+                val_exacto = re.sub(r'\s+', ' ', str(val).strip().upper())
+                
+                # COINCIDENCIA EXACTA UNICAMENTE
+                if nombre_exacto_target == val_exacto:
+                    fila_alumno = idx_f
+                    fila_ej_base = -1
+                    col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
-                            fila_sub = matriz[idx_sub]
-                            for idx_col_sub, val_c in enumerate(fila_sub):
-                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
-                                    fila_ej_base = idx_sub
-                                    col_ejercicio_detectada = idx_col_sub
-                                    break
-                            if fila_ej_base != -1:
+                    for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
+                        fila_sub = matriz[idx_sub]
+                        for idx_col_sub, val_c in enumerate(fila_sub):
+                            if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
+                                fila_ej_base = idx_sub
+                                col_ejercicio_detectada = idx_col_sub
                                 break
-
-                        if fila_ej_base == -1:
-                            fila_ej_base = fila_alumno + 7
-                            col_ejercicio_detectada = 5
-
-                        fila_ejercicios_inicio = fila_ej_base + 1
-                        col_inicio = col_ejercicio_detectada
-
-                        # Escanear todos los días de acuerdo a su frecuencia real (3 o 4 días/sem)
-                        for d in range(1, total_dias + 1):
-                            s_num = ((d - 1) // frec_semanal) + 1
-                            d_num = ((d - 1) % frec_semanal) + 1
-
-                            for fila_idx in range(12):
-                                idx_f_matriz = fila_ejercicios_inicio + fila_idx
-                                if idx_f_matriz < len(matriz):
-                                    f_row = matriz[idx_f_matriz]
-                                    ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
-                                    p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
-                                    r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
-
-                                    ej_str = str(ej).strip()
-                                    if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
-                                        registros.append({
-                                            "Semana": s_num,
-                                            "Día": d_num,
-                                            "Fila": fila_idx + 1,
-                                            "Ejercicio": ej_str,
-                                            "Peso": str(p).strip(),
-                                            "Series_Reps": str(r).strip()
-                                        })
-                            col_inicio += 3
-
-                        if registros:
-                            encontrado = True
+                        if fila_ej_base != -1:
                             break
-                if encontrado:
-                    break
 
-            if registros:
-                guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
-                return registros
+                    if fila_ej_base == -1:
+                        fila_ej_base = fila_alumno + 7
+                        col_ejercicio_detectada = 5
 
-        # Evaluación temporal en B2 para forzar recálculo dinámico de formulas de Drive
-        if not registros and hojas_candidatas:
-            hoja_main = hojas_candidatas[0]
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!B2",
-                valueInputOption="USER_ENTERED", body={'values': [[nombre_alumno]]}
-            ).execute()
+                    fila_ejercicios_inicio = fila_ej_base + 1
+                    col_inicio = col_ejercicio_detectada
 
-            res_evaluado = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!A1:ZZ100"
-            ).execute()
-            rows_m = res_evaluado.get('values', [])
-            if rows_m:
-                max_c2 = max(len(r) for r in rows_m)
-                matriz2 = [r + [''] * (max_c2 - len(r)) for r in rows_m]
-                col_inicio = 5
-                fila_ejercicios_inicio = 8
+                    for d in range(1, total_dias + 1):
+                        s_num = ((d - 1) // frec_semanal) + 1
+                        d_num = ((d - 1) % frec_semanal) + 1
 
-                for d in range(1, total_dias + 1):
-                    s_num = ((d - 1) // frec_semanal) + 1
-                    d_num = ((d - 1) % frec_semanal) + 1
+                        for fila_idx in range(12):
+                            idx_f_matriz = fila_ejercicios_inicio + fila_idx
+                            if idx_f_matriz < len(matriz):
+                                f_row = matriz[idx_f_matriz]
+                                ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
+                                p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
+                                r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
-                    for fila_idx in range(12):
-                        idx_f_matriz = fila_ejercicios_inicio + fila_idx
-                        if idx_f_matriz < len(matriz2):
-                            f_row = matriz2[idx_f_matriz]
-                            ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
-                            p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
-                            r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
+                                ej_str = str(ej).strip()
+                                if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
+                                    registros.append({
+                                        "Semana": s_num,
+                                        "Día": d_num,
+                                        "Fila": fila_idx + 1,
+                                        "Ejercicio": ej_str,
+                                        "Peso": str(p).strip(),
+                                        "Series_Reps": str(r).strip()
+                                    })
+                        col_inicio += 3
 
-                            ej_str = str(ej).strip()
-                            if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
-                                registros.append({
-                                    "Semana": s_num,
-                                    "Día": d_num,
-                                    "Fila": fila_idx + 1,
-                                    "Ejercicio": ej_str,
-                                    "Peso": str(p).strip(),
-                                    "Series_Reps": str(r).strip()
-                                })
-                    col_inicio += 3
+                    if registros:
+                        return registros
 
-        if registros:
-            guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
-            return registros
-
-        return leer_respaldo_local(nombre_alumno, mes_nombre)
+        return registros
     except Exception:
-        return leer_respaldo_local(nombre_alumno, mes_nombre)
+        return []
 
 # ==========================================
 # INTERFAZ Y NAVEGACIÓN
@@ -418,7 +316,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Guardando planificación con doble capa de respaldo..."):
+            with st.spinner("⏳ Guardando planificación de forma independiente..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -486,7 +384,6 @@ if modo_app == "Armar Planificación Mensual":
                     col_inicio = 6
 
                     batch_global_data = []
-                    registros_para_respaldo = []
 
                     for d in range(1, total_dias_mes + 1):
                         s_num = ((d - 1) // frec_semanal) + 1
@@ -511,10 +408,6 @@ if modo_app == "Armar Planificación Mensual":
                                 
                                 if ej not in ["-- Seleccionar Ejercicio --", "", None]:
                                     ejercicios_dia.append([ej, p, r])
-                                    registros_para_respaldo.append({
-                                        "Semana": s_num, "Día": d_num, "Fila": f_idx,
-                                        "Ejercicio": ej, "Peso": p, "Series_Reps": r
-                                    })
                                 else:
                                     ejercicios_dia.append(["", "", ""])
                         else:
@@ -531,14 +424,11 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
-                    # GUARDAR EN EL RESPALDO LOCAL ANTI-PÉRDIDA
-                    guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
-
                     if key_carga in st.session_state:
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Sincronizado y Respaldado! La rutina de {alumno_sel} ({mes_sel}) quedó resguardada de forma permanente.")
+                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue guardada sin alterar a otros alumnos.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
