@@ -106,7 +106,7 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# MOTOR DE LECTURA DE PLAN
+# MOTOR DE LECTURA AUTÓNOMO DE DÍAS Y RUTINAS
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -126,7 +126,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
-        total_dias = frec_semanal * semanas_mes
         registros = []
 
         nombre_target = str(nombre_alumno).strip().upper()
@@ -149,13 +148,21 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                     if nombre_target == val_str:
                         fila_alumno = idx_f
                         fila_ej_base = fila_alumno + 7
+                        
+                        # Escanear dinámicamente hasta 30 columnas a la derecha (cobertura total de días del mes)
                         col_inicio = 5
+                        bloque_idx = 0
+                        
+                        while col_inicio < max_c - 2 and bloque_idx < 30:
+                            s_num = (bloque_idx // frec_semanal) + 1
+                            d_num = (bloque_idx % frec_semanal) + 1
+                            
+                            if s_num > semanas_mes:
+                                break
 
-                        for d in range(1, total_dias + 1):
-                            s_num = ((d - 1) // frec_semanal) + 1
-                            d_num = ((d - 1) % frec_semanal) + 1
+                            dias_encontrados_en_bloque = False
 
-                            for fila_idx in range(10):
+                            for fila_idx in range(12):
                                 idx_f_matriz = fila_ej_base + 1 + fila_idx
                                 if idx_f_matriz < len(matriz):
                                     f_row = matriz[idx_f_matriz]
@@ -164,7 +171,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                     r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
                                     ej_str = str(ej).strip()
-                                    # FILTRADO STRICTO PARA EVITAR ENCABEZADOS MEZCLADOS
                                     if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
                                         if not re.match(r'^(semana|día|dia)\s*\d+', ej_str.lower()):
                                             registros.append({
@@ -175,7 +181,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                                 "Peso": str(p).strip(),
                                                 "Series_Reps": str(r).strip()
                                             })
+                                            dias_encontrados_en_bloque = True
+
                             col_inicio += 3
+                            bloque_idx += 1
 
                         if registros:
                             return registros
@@ -458,7 +467,6 @@ else:
                             df_sem_raw = df_al_v[df_al_v["Semana"] == sem_v]
                             dias_unicos = sorted(df_sem_raw["Día"].unique().tolist())
                             
-                            # DESGLOSE ORDENADO POR DÍA
                             t_dias_v = st.tabs([f"Día {d}" for d in dias_unicos])
                             for dia_idx, dia_v in enumerate(dias_unicos):
                                 with t_dias_v[dia_idx]:
