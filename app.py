@@ -109,7 +109,7 @@ def guardar_respaldo_local(nombre_alumno, mes_nombre, registros):
             with open(data_file, "r", encoding="utf-8") as f:
                 master_data = json.load(f)
         
-        key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
+        key = f"{str(nombre_alumno).upper()}_{str(mes_nombre).upper()}"
         master_data[key] = {
             "alumno": nombre_alumno,
             "mes": mes_nombre,
@@ -128,7 +128,7 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
         if os.path.exists(data_file):
             with open(data_file, "r", encoding="utf-8") as f:
                 master_data = json.load(f)
-            key = f"{nombre_alumno.upper()}_{mes_nombre.upper()}"
+            key = f"{str(nombre_alumno).upper()}_{str(mes_nombre).upper()}"
             if key in master_data:
                 return master_data[key].get("rutina", [])
     except Exception:
@@ -136,10 +136,10 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
     return []
 
 # ==========================================
-# LECTURA CON DOBLE CAPA DE SEGURIDAD
+# LECTURA SIN CRUCES DE INFORMACIÓN
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
-    if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
+    if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
         return []
 
     try:
@@ -156,10 +156,21 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = 3
+        
+        # Frecuencia exacta por alumno desde la pestaña Alumnos
+        if not df_alumnos.empty:
+            col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
+            col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+            match_al = df_alumnos[df_alumnos[col_al].astype(str).str.strip().str.upper() == str(nombre_alumno).strip().upper()]
+            if not match_al.empty and col_fr in match_al.columns:
+                nums = re.findall(r'\d+', str(match_al[col_fr].values[0]))
+                if nums:
+                    frec_semanal = int(nums[0])
+
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_clean_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+        nombre_target = str(nombre_alumno).strip().upper()
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
@@ -175,9 +186,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             encontrado = False
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_clean = re.sub(r'[^A-Z0-9]', '', str(val).upper())
+                    val_str = str(val).strip().upper()
                     
-                    if nombre_clean_target in val_clean and len(val_clean) > 2:
+                    # COINCIDENCIA EXACTA PARA EVITAR CONFUSIONES ENTRE DANIELAS O CAMILAS
+                    if nombre_target == val_str:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
@@ -233,7 +245,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                 guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                 return registros
 
-        # Evaluación temporal en B2 para forzar recálculo dinámico de formulas de Drive
+        # Evaluación temporal para formulas de Drive
         if not registros and hojas_candidatas:
             hoja_main = hojas_candidatas[0]
             service.spreadsheets().values().update(
@@ -279,7 +291,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
             return registros
 
-        # RECUPERACIÓN FALLBACK: Si Drive no respondió, consultar la copia local
         return leer_respaldo_local(nombre_alumno, mes_nombre)
     except Exception:
         return leer_respaldo_local(nombre_alumno, mes_nombre)
@@ -539,6 +550,7 @@ else:
     with c_mes_v:
         mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7, key="mes_ver_vivo")
     with c_ref:
+        # BOTÓN REFRESCAR EN VIVO: Forzar recarga limpia sin colgar la app
         if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
             st.rerun()
 
