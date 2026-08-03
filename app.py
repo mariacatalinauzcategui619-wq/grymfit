@@ -108,7 +108,7 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# LECTURA CON COINCIDENCIA EXACTA SIN CRUCES
+# LECTURA CON COINCIDENCIA EXACTA E ISOLADA
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -120,7 +120,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         sheets = sheet_metadata.get('sheets', [])
         dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-        # Trabajar sobre la hoja aislada de la App para evitar cruce de formulas
         nombre_hoja_lectura = hoja_app_destino if hoja_app_destino in dict_hojas else mes_nombre
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
@@ -144,7 +143,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             for idx_c, val in enumerate(fila):
                 val_exacto = re.sub(r'\s+', ' ', str(val).strip().upper())
                 
-                # COINCIDENCIA EXACTA UNICAMENTE
                 if nombre_exacto_target == val_exacto:
                     fila_alumno = idx_f
                     fila_ej_base = -1
@@ -219,6 +217,11 @@ if modo_app == "Armar Planificación Mensual":
     with c_mes:
         mes_sel = st.selectbox("Mes de Planificación:", list(dic_meses.keys()), index=7)
 
+    # Limpiar estado si cambia de alumno para evitar cruce de datos
+    if "ultimo_alumno_plan" not in st.session_state or st.session_state["ultimo_alumno_plan"] != alumno_sel:
+        st.session_state["plan_datos"] = {}
+        st.session_state["ultimo_alumno_plan"] = alumno_sel
+
     semanas_mes = obtener_semanas_del_mes(mes_sel)
     frec_semanal = obtener_frecuencia_alumno(alumno_sel)
 
@@ -227,9 +230,6 @@ if modo_app == "Armar Planificación Mensual":
         st.metric("Total Días al Mes", f"{total_dias_mes} Días", delta=f"{semanas_mes} sem x {frec_semanal} días/sem")
 
     st.markdown("---")
-
-    if "plan_datos" not in st.session_state:
-        st.session_state["plan_datos"] = {}
 
     key_carga = f"cargado_{alumno_sel}_{mes_sel}"
     if key_carga not in st.session_state:
@@ -316,7 +316,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Guardando planificación de forma independiente..."):
+            with st.spinner("⏳ Sincronizando directamente con Google Drive..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -428,7 +428,7 @@ if modo_app == "Armar Planificación Mensual":
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Guardado completado! La rutina de {alumno_sel} ({mes_sel}) fue guardada sin alterar a otros alumnos.")
+                    st.success(f"✅ Sincronización exitosa: La rutina de {alumno_sel} ({mes_sel}) fue actualizada en Google Drive.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
