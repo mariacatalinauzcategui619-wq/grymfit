@@ -91,16 +91,12 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
-# ==========================================
-# OBTENCIÓN AUTOMÁTICA Y PRECISA DE FRECUENCIA
-# ==========================================
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
         return 3
     col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
     col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
     
-    # Limpieza total de caracteres especiales y espacios múltiples
     target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
     
     for idx, row in df_alumnos.iterrows():
@@ -113,7 +109,7 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# MOTOR DE LECTURA AUTÓNOMO UNIVERSAL
+# LECTURA DE PLAN COMPLETA (3, 4 O 5 DÍAS)
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -155,15 +151,33 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                     
                     if nombre_target == val_str and len(val_str) > 2:
                         fila_alumno = idx_f
-                        fila_ej_base = fila_alumno + 7
-                        col_inicio = 5
+                        fila_ej_base = -1
+                        col_ejercicio_detectada = -1
 
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
+                            fila_sub = matriz[idx_sub]
+                            for idx_col_sub, val_c in enumerate(fila_sub):
+                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
+                                    fila_ej_base = idx_sub
+                                    col_ejercicio_detectada = idx_col_sub
+                                    break
+                            if fila_ej_base != -1:
+                                break
+
+                        if fila_ej_base == -1:
+                            fila_ej_base = fila_alumno + 7
+                            col_ejercicio_detectada = 5
+
+                        fila_ejercicios_inicio = fila_ej_base + 1
+                        col_inicio = col_ejercicio_detectada
+
+                        # Escanear el total de días correspondiente (incluyendo el Día 4)
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
 
-                            for fila_idx in range(10):
-                                idx_f_matriz = fila_ej_base + 1 + fila_idx
+                            for fila_idx in range(12):
+                                idx_f_matriz = fila_ejercicios_inicio + fila_idx
                                 if idx_f_matriz < len(matriz):
                                     f_row = matriz[idx_f_matriz]
                                     ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
