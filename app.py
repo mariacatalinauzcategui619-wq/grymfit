@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# OBTENCIÓN AUTOMÁTICA DE FRECUENCIA PARA LOS 50+ ALUMNOS
+# OBTENCIÓN AUTOMÁTICA Y PRECISA DE FRECUENCIA
 # ==========================================
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
@@ -100,11 +100,12 @@ def obtener_frecuencia_alumno(nombre_alumno):
     col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
     col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
     
-    target_clean = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
+    # Limpieza total de caracteres especiales y espacios múltiples
+    target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
     
     for idx, row in df_alumnos.iterrows():
-        al_val = re.sub(r'\s+', ' ', str(row[col_al]).strip().upper())
-        if target_clean == al_val:
+        al_val = re.sub(r'[^A-Z0-9]', '', str(row[col_al]).upper())
+        if target_clean == al_val and len(target_clean) > 2:
             val_frec = str(row[col_fr])
             nums = re.findall(r'\d+', val_frec)
             if nums:
@@ -135,7 +136,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        nombre_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
+        nombre_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
@@ -150,14 +151,13 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_str = re.sub(r'\s+', ' ', str(val).strip().upper())
+                    val_str = re.sub(r'[^A-Z0-9]', '', str(val).upper())
                     
-                    if nombre_target == val_str:
+                    if nombre_target == val_str and len(val_str) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = fila_alumno + 7
                         col_inicio = 5
 
-                        # Escanear el número exacto de días según su frecuencia (3, 4 o 5 días)
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
