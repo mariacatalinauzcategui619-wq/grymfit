@@ -92,24 +92,32 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# LECTURA POR MES Y ALUMNO
+# BÚSQUEDA DIRECTA Y COMPLETA EN HOJA _APP
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
         return []
 
     try:
+        hoja_app_destino = f"Plan_{mes_nombre}_App"
+        
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
-        
-        # Filtrar STRICTAMENTE pestañas correspondientes al mes seleccionado
-        hojas_candidatas = [
-            h['properties']['title'] for h in sheets 
-            if mes_nombre.lower() in h['properties']['title'].lower()
-        ]
+        dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
 
-        if not hojas_candidatas:
+        if hoja_app_destino not in dict_hojas:
             return []
+
+        # Descargar la hoja completa hasta 3000 filas
+        res_completo = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:ZZ3000"
+        ).execute()
+        rows_matriz = res_completo.get('values', [])
+        if not rows_matriz:
+            return []
+
+        max_c = max(len(r) for r in rows_matriz)
+        matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = 3
@@ -118,71 +126,60 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
-        for nombre_hoja_real in hojas_candidatas:
-            res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ2000"
-            ).execute()
-            rows_matriz = res_completo.get('values', [])
-            if not rows_matriz:
-                continue
+        # ESCANEO TOTAL DE LA HOJA: Busca al alumno en CUALQUIER fila de la columna B o la hoja
+        for idx_f, fila in enumerate(matriz):
+            for idx_c_nombre, val in enumerate(fila):
+                val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
+                
+                if nombre_buscar == val_clean or (nombre_buscar in val_clean and len(val_clean) > 2):
+                    fila_alumno = idx_f
+                    fila_ej_base = -1
+                    col_ejercicio_detectada = -1
 
-            max_c = max(len(r) for r in rows_matriz)
-            matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
-
-            # Buscar al alumno en la hoja del mes
-            for idx_f, fila in enumerate(matriz):
-                for idx_c_nombre, val in enumerate(fila):
-                    val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
-                    
-                    if nombre_buscar in val_clean and len(val_clean) > 2:
-                        fila_alumno = idx_f
-                        fila_ej_base = -1
-                        col_ejercicio_detectada = -1
-
-                        # Buscar la palabra 'Ejercicio' en las celdas cercanas del alumno
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
-                            fila_sub = matriz[idx_sub]
-                            for idx_c, val_c in enumerate(fila_sub):
-                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
-                                    fila_ej_base = idx_sub
-                                    col_ejercicio_detectada = idx_c
-                                    break
-                            if fila_ej_base != -1:
+                    # Buscar encabezado Ejercicio en las celdas inferiores asociadas a esa fila
+                    for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
+                        fila_sub = matriz[idx_sub]
+                        for idx_c, val_c in enumerate(fila_sub):
+                            if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
+                                fila_ej_base = idx_sub
+                                col_ejercicio_detectada = idx_c
                                 break
+                        if fila_ej_base != -1:
+                            break
 
-                        if fila_ej_base == -1:
-                            fila_ej_base = fila_alumno + 7
-                            col_ejercicio_detectada = 5
+                    if fila_ej_base == -1:
+                        fila_ej_base = fila_alumno + 7
+                        col_ejercicio_detectada = 5
 
-                        fila_ejercicios_inicio = fila_ej_base + 1
-                        col_inicio = col_ejercicio_detectada
+                    fila_ejercicios_inicio = fila_ej_base + 1
+                    col_inicio = col_ejercicio_detectada
 
-                        for d in range(1, total_dias + 1):
-                            s_num = ((d - 1) // frec_semanal) + 1
-                            d_num = ((d - 1) % frec_semanal) + 1
+                    for d in range(1, total_dias + 1):
+                        s_num = ((d - 1) // frec_semanal) + 1
+                        d_num = ((d - 1) % frec_semanal) + 1
 
-                            for fila_idx in range(15):
-                                idx_f_matriz = fila_ejercicios_inicio + fila_idx
-                                if idx_f_matriz < len(matriz):
-                                    f_row = matriz[idx_f_matriz]
-                                    ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
-                                    p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
-                                    r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
+                        for fila_idx in range(12):
+                            idx_f_matriz = fila_ejercicios_inicio + fila_idx
+                            if idx_f_matriz < len(matriz):
+                                f_row = matriz[idx_f_matriz]
+                                ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
+                                p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
+                                r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
 
-                                    ej_str = str(ej).strip()
-                                    if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
-                                        registros.append({
-                                            "Semana": s_num,
-                                            "Día": d_num,
-                                            "Fila": fila_idx + 1,
-                                            "Ejercicio": ej_str,
-                                            "Peso": str(p).strip(),
-                                            "Series_Reps": str(r).strip()
-                                        })
-                            col_inicio += 3
+                                ej_str = str(ej).strip()
+                                if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
+                                    registros.append({
+                                        "Semana": s_num,
+                                        "Día": d_num,
+                                        "Fila": fila_idx + 1,
+                                        "Ejercicio": ej_str,
+                                        "Peso": str(p).strip(),
+                                        "Series_Reps": str(r).strip()
+                                    })
+                        col_inicio += 3
 
-                        if registros:
-                            return registros
+                    if registros:
+                        return registros
         return registros
     except Exception:
         return []
@@ -330,10 +327,11 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ2000").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_control = [2 + (41 * i) for i in range(50)]
+                    # Maneja hasta 100 bloques para acomodar ilimitadamente a todos los alumnos
+                    filas_control = [2 + (41 * i) for i in range(100)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
