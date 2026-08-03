@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# MOTOR DE LECTURA ROBUSTO GLOBAL
+# BUSCADOR ADAPTADO A LA ESTRUCTURA REAL (COL E/F)
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -115,11 +115,12 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         total_dias = frec_semanal * semanas_mes
         registros = []
 
+        # Normalización limpia de nombre
         nombre_clean_target = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ3000"
             ).execute()
             rows_matriz = res_completo.get('values', [])
             if not rows_matriz:
@@ -128,37 +129,41 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             max_c = max(len(r) for r in rows_matriz)
             matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
+            # BUSCAR EL NOMBRE DEL ALUMNO EN CUALQUIER COLUMNA DE LA MATRIZ
             for idx_f, fila in enumerate(matriz):
-                for idx_c_nombre, val in enumerate(fila):
+                for idx_c, val in enumerate(fila):
                     val_clean = re.sub(r'[^A-Z0-9]', '', str(val).upper())
                     
+                    # Coincidencia con el nombre del alumno (en B, E, F, etc.)
                     if nombre_clean_target in val_clean and len(val_clean) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 35, len(matriz))):
+                        # Buscar la primera fila que contenga un ejercicio o el encabezado "Ejercicio"
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
                             fila_sub = matriz[idx_sub]
-                            for idx_c, val_c in enumerate(fila_sub):
-                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
-                                    fila_ej_base = idx_sub
-                                    col_ejercicio_detectada = idx_c
-                                    break
+                            for idx_col_sub, val_c in enumerate(fila_sub):
+                                if str(val_c).strip().lower() in ["ejercicio", "ejercicios"] or idx_col_sub >= 5:
+                                    if str(val_c).strip() != "":
+                                        fila_ej_base = idx_sub
+                                        col_ejercicio_detectada = idx_col_sub if str(val_c).strip().lower() in ["ejercicio", "ejercicios"] else 5
+                                        break
                             if fila_ej_base != -1:
                                 break
 
                         if fila_ej_base == -1:
-                            fila_ej_base = fila_alumno + 7
+                            fila_ej_base = fila_alumno + 1
                             col_ejercicio_detectada = 5
 
-                        fila_ejercicios_inicio = fila_ej_base + 1
+                        fila_ejercicios_inicio = fila_ej_base if str(matriz[fila_ej_base][col_ejercicio_detectada]).strip().lower() not in ["ejercicio", "ejercicios"] else fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
 
-                            for fila_idx in range(15):
+                            for fila_idx in range(12):
                                 idx_f_matriz = fila_ejercicios_inicio + fila_idx
                                 if idx_f_matriz < len(matriz):
                                     f_row = matriz[idx_f_matriz]
@@ -327,10 +332,10 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ5000").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_control = [2 + (41 * i) for i in range(150)]
+                    filas_control = [2 + (41 * i) for i in range(100)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
@@ -351,9 +356,16 @@ if modo_app == "Armar Planificación Mensual":
                     if fila_control_alumno == -1:
                         fila_control_alumno = primer_slot_libre if primer_slot_libre != -1 else filas_control[0]
 
+                    # Actualizar celda B de control y la celda azul de cabecera de tabla
                     service.spreadsheets().values().update(
                         spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!B{fila_control_alumno}:C{fila_control_alumno}",
                         valueInputOption="USER_ENTERED", body={'values': [[alumno_sel, frec_semanal]]}
+                    ).execute()
+
+                    fila_cabecera_azul = fila_control_alumno + 6
+                    service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!E{fila_cabecera_azul}",
+                        valueInputOption="USER_ENTERED", body={'values': [[alumno_sel]]}
                     ).execute()
 
                     filas_encabezado_ejercicio = [idx_f + 1 for idx_f, fila in enumerate(matriz) if any(str(val_c).strip().lower() == "ejercicio" for val_c in fila)]
