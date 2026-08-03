@@ -91,12 +91,29 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
+# ==========================================
+# OBTENCIÓN DE FRECUENCIA ULTRA ROBUSTA
+# ==========================================
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
-        return 3
-    col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
-    col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+        return 4
     
+    col_al = None
+    for c in df_alumnos.columns:
+        if "alumno" in str(c).lower():
+            col_al = c
+            break
+    if not col_al:
+        col_al = df_alumnos.columns[0]
+
+    col_fr = None
+    for c in df_alumnos.columns:
+        if "frecuencia" in str(c).lower():
+            col_fr = c
+            break
+    if not col_fr:
+        col_fr = df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0]
+
     target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
     
     for idx, row in df_alumnos.iterrows():
@@ -106,10 +123,10 @@ def obtener_frecuencia_alumno(nombre_alumno):
             nums = re.findall(r'\d+', val_frec)
             if nums:
                 return int(nums[0])
-    return 3
+    return 4
 
 # ==========================================
-# LECTURA DE PLAN COMPLETA (3, 4 O 5 DÍAS)
+# MOTOR DE LECTURA AUTÓNOMO UNIVERSAL
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -171,7 +188,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
-                        # Escanear el total de días correspondiente (incluyendo el Día 4)
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
