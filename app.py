@@ -98,6 +98,20 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
+def obtener_frecuencia_alumno(nombre_alumno):
+    if df_alumnos.empty:
+        return 3
+    col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
+    col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+    
+    target_clean = str(nombre_alumno).strip().upper()
+    match_al = df_alumnos[df_alumnos[col_al].astype(str).str.strip().str.upper() == target_clean]
+    if not match_al.empty and col_fr in match_al.columns:
+        nums = re.findall(r'\d+', str(match_al[col_fr].values[0]))
+        if nums:
+            return int(nums[0])
+    return 3
+
 # ==========================================
 # FUNCIONES DE RESPALDO ANTI-PÉRDIDA
 # ==========================================
@@ -136,7 +150,7 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
     return []
 
 # ==========================================
-# LECTURA SIN CRUCES DE INFORMACIÓN
+# LECTURA COMPLETA ADAPTADA A LA FRECUENCIA REAL
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -155,18 +169,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             hojas_candidatas = [h['properties']['title'] for h in sheets]
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
-        frec_semanal = 3
-        
-        # Frecuencia exacta por alumno desde la pestaña Alumnos
-        if not df_alumnos.empty:
-            col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
-            col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
-            match_al = df_alumnos[df_alumnos[col_al].astype(str).str.strip().str.upper() == str(nombre_alumno).strip().upper()]
-            if not match_al.empty and col_fr in match_al.columns:
-                nums = re.findall(r'\d+', str(match_al[col_fr].values[0]))
-                if nums:
-                    frec_semanal = int(nums[0])
-
+        frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
         total_dias = frec_semanal * semanas_mes
         registros = []
 
@@ -188,7 +191,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                 for idx_c, val in enumerate(fila):
                     val_str = str(val).strip().upper()
                     
-                    # COINCIDENCIA EXACTA PARA EVITAR CONFUSIONES ENTRE DANIELAS O CAMILAS
                     if nombre_target == val_str:
                         fila_alumno = idx_f
                         fila_ej_base = -1
@@ -211,6 +213,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
+                        # Bucle ajustado a total_dias según la frecuencia exacta (3, 4 o 5 días)
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
@@ -245,7 +248,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                 guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                 return registros
 
-        # Evaluación temporal para formulas de Drive
+        # Evaluación temporal en B2 para fórmulas de Drive si no se halló en bloque
         if not registros and hojas_candidatas:
             hoja_main = hojas_candidatas[0]
             service.spreadsheets().values().update(
@@ -317,12 +320,7 @@ if modo_app == "Armar Planificación Mensual":
         mes_sel = st.selectbox("Mes de Planificación:", list(dic_meses.keys()), index=7)
 
     semanas_mes = obtener_semanas_del_mes(mes_sel)
-    datos_al = df_alumnos[df_alumnos[col_alumno] == alumno_sel] if not df_alumnos.empty else pd.DataFrame()
-    frec_semanal = 3
-    if not datos_al.empty and col_frec in datos_al.columns:
-        nums = re.findall(r'\d+', str(datos_al[col_frec].values[0]))
-        if nums:
-            frec_semanal = int(nums[0])
+    frec_semanal = obtener_frecuencia_alumno(alumno_sel)
 
     total_dias_mes = frec_semanal * semanas_mes
     with c_frec:
@@ -531,7 +529,6 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
-                    # GUARDAR EN EL RESPALDO LOCAL ANTI-PÉRDIDA
                     guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
 
                     if key_carga in st.session_state:
@@ -550,7 +547,6 @@ else:
     with c_mes_v:
         mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7, key="mes_ver_vivo")
     with c_ref:
-        # BOTÓN REFRESCAR EN VIVO: Forzar recarga limpia sin colgar la app
         if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
             st.rerun()
 
