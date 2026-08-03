@@ -98,6 +98,22 @@ def col2letter(col_idx):
         result = chr(65 + remainder) + result
     return result
 
+def obtener_frecuencia_alumno(nombre_alumno):
+    if df_alumnos.empty:
+        return 3
+    col_al = "Alumnos" if "Alumnos" in df_alumnos.columns else df_alumnos.columns[0]
+    col_fr = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+    
+    target_clean = re.sub(r'[^A-Z0-9]', '', str(nombre_alumno).upper())
+    for idx, row in df_alumnos.iterrows():
+        al_val = re.sub(r'[^A-Z0-9]', '', str(row[col_al]).upper())
+        if target_clean == al_val or (target_clean in al_val and len(target_clean) > 3):
+            val_frec = str(row[col_fr])
+            nums = re.findall(r'\d+', val_frec)
+            if nums:
+                return int(nums[0])
+    return 3
+
 # ==========================================
 # FUNCIONES DE RESPALDO ANTI-PÉRDIDA
 # ==========================================
@@ -136,7 +152,7 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
     return []
 
 # ==========================================
-# LECTURA CON DOBLE CAPA DE SEGURIDAD
+# LECTURA CON DOBLE CAPA Y FRECUENCIA EXACTA
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -155,7 +171,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             hojas_candidatas = [h['properties']['title'] for h in sheets]
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
-        frec_semanal = 3
+        frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
         total_dias = frec_semanal * semanas_mes
         registros = []
 
@@ -199,6 +215,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
+                        # Escanear todos los días de acuerdo a su frecuencia real (3 o 4 días/sem)
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
@@ -279,7 +296,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
             return registros
 
-        # RECUPERACIÓN FALLBACK: Si Drive no respondió, consultar la copia local
         return leer_respaldo_local(nombre_alumno, mes_nombre)
     except Exception:
         return leer_respaldo_local(nombre_alumno, mes_nombre)
@@ -306,12 +322,7 @@ if modo_app == "Armar Planificación Mensual":
         mes_sel = st.selectbox("Mes de Planificación:", list(dic_meses.keys()), index=7)
 
     semanas_mes = obtener_semanas_del_mes(mes_sel)
-    datos_al = df_alumnos[df_alumnos[col_alumno] == alumno_sel] if not df_alumnos.empty else pd.DataFrame()
-    frec_semanal = 3
-    if not datos_al.empty and col_frec in datos_al.columns:
-        nums = re.findall(r'\d+', str(datos_al[col_frec].values[0]))
-        if nums:
-            frec_semanal = int(nums[0])
+    frec_semanal = obtener_frecuencia_alumno(alumno_sel)
 
     total_dias_mes = frec_semanal * semanas_mes
     with c_frec:
