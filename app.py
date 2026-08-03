@@ -37,7 +37,8 @@ def conectar_drive():
 
 service, spreadsheet_id = conectar_drive()
 
-# Cargar listas base sin caché para sincronización inmediata
+# Cargar listas base
+@st.cache_data(ttl=10)
 def cargar_listas_base():
     try:
         res_ej = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="Ejercicios!A:B").execute()
@@ -108,38 +109,35 @@ def obtener_frecuencia_alumno(nombre_alumno):
     return 3
 
 # ==========================================
-# MOTOR DE LECTURA POR COINCIDENCIA EXACTA UNÍVOCA
+# MOTOR DE BÚSQUEDA GLOBAL RESTAURADO
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
-    if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
+    if not nombre_alumno or str(nombre_alumno).strip() in ["-- Seleccionar --", "", "None"]:
         return []
 
     try:
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
-        dict_hojas = {h['properties']['title']: h['properties']['sheetId'] for h in sheets}
+        
+        hojas_candidatas = [
+            h['properties']['title'] for h in sheets 
+            if mes_nombre.lower() in h['properties']['title'].lower()
+        ]
 
-        hoja_app_destino = f"Plan_{mes_nombre}_App"
-        
-        hojas_a_probar = []
-        if hoja_app_destino in dict_hojas:
-            hojas_a_probar.append(hoja_app_destino)
-        
-        for h_title in dict_hojas.keys():
-            if mes_nombre.lower() in h_title.lower() and h_title != hoja_app_destino:
-                hojas_a_probar.append(h_title)
+        if not hojas_candidatas:
+            hojas_candidatas = [h['properties']['title'] for h in sheets]
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
         total_dias = frec_semanal * semanas_mes
         registros = []
 
-        # CADENA EXACTA COMPLETA
-        nombre_exacto_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
+        # Limpieza estricta de espacios para coincidencia perfecta
+        nombre_clean_target = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
-        for nombre_hoja_lectura in hojas_a_probar:
+        for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_lectura}'!A1:ZZ5000"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
             ).execute()
             rows_matriz = res_completo.get('values', [])
             if not rows_matriz:
@@ -148,17 +146,17 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             max_c = max(len(r) for r in rows_matriz)
             matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
+            # BÚSQUEDA GLOBAL: Recorrer toda la hoja celda por celda
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_exacto = re.sub(r'\s+', ' ', str(val).strip().upper())
+                    val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
                     
-                    # COMPARACIÓN ESTRICTA (IGUALDAD ABSOLUTA)
-                    if nombre_exacto_target == val_exacto:
+                    if nombre_clean_target == val_clean:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_col_sub, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
@@ -214,9 +212,10 @@ modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ve
 
 col_alumno = "Alumnos" if "Alumnos" in df_alumnos.columns else (df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
 col_frec = "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else (df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
-lista_alumnos = sorted(df_alumnos[col_alumno].dropna().unique().tolist()) if not df_alumnos.empty else []
-if "" in lista_alumnos:
-    lista_alumnos.remove("")
+
+# Limpieza estricta de nombres para los selectbox
+raw_alumnos = df_alumnos[col_alumno].dropna().tolist() if not df_alumnos.empty else []
+lista_alumnos = sorted(list(set([str(a).strip() for a in raw_alumnos if str(a).strip() != ""])))
 
 if modo_app == "Armar Planificación Mensual":
     st.title("Armar Planificación Mensual")
@@ -433,6 +432,7 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
+                    st.cache_data.clear()
                     if key_carga in st.session_state:
                         del st.session_state[key_carga]
 
@@ -450,21 +450,30 @@ else:
         mes_ver = st.selectbox("Seleccionar Mes a Consultar:", list(dic_meses.keys()), index=7, key="mes_ver_vivo")
     with c_ref:
         if st.button("🔄 Refrescar Datos en Vivo", use_container_width=True, type="primary"):
+            st.cache_data.clear()
             st.rerun()
 
     st.markdown("### Selecciona qué Alumno cargar en cada Bloque:")
     
+    opciones_select = ["-- Seleccionar --"] + lista_alumnos
+    
     ca1, ca2, ca3, ca4 = st.columns(4)
-    with ca1: al_v1 = st.selectbox("Bloque 1:", ["-- Seleccionar --"] + lista_alumnos, key="b1_sel")
-    with ca2: al_v2 = st.selectbox("Bloque 2:", ["-- Seleccionar --"] + lista_alumnos, key="b2_sel")
-    with ca3: al_v3 = st.selectbox("Bloque 3:", ["-- Seleccionar --"] + lista_alumnos, key="b3_sel")
-    with ca4: al_v4 = st.selectbox("Bloque 4:", ["-- Seleccionar --"] + lista_alumnos, key="b4_sel")
+    with ca1: al_v1 = st.selectbox("Bloque 1:", opciones_select, key="b1_sel")
+    with ca2: al_v2 = st.selectbox("Bloque 2:", opciones_select, key="b2_sel")
+    with ca3: al_v3 = st.selectbox("Bloque 3:", opciones_select, key="b3_sel")
+    with ca4: al_v4 = st.selectbox("Bloque 4:", opciones_select, key="b4_sel")
 
-    alumnos_seleccionados = [a for a in [al_v1, al_v2, al_v3, al_v4] if a and a != "-- Seleccionar --"]
+    # FILTRADO ROBUSTO SIN PERDER SELECCIONES
+    alumnos_seleccionados = []
+    for a in [al_v1, al_v2, al_v3, al_v4]:
+        if a and str(a).strip() not in ["-- Seleccionar --", "", "None"]:
+            if str(a).strip() not in alumnos_seleccionados:
+                alumnos_seleccionados.append(str(a).strip())
+
     st.markdown("---")
 
     if alumnos_seleccionados:
-        tabs_al_ver = st.tabs([f"{al}" for al in alumnos_seleccionados])
+        tabs_al_ver = st.tabs(alumnos_seleccionados)
         for idx, tab_al_v in enumerate(tabs_al_ver):
             al_nombre = alumnos_seleccionados[idx]
             with tab_al_v:
