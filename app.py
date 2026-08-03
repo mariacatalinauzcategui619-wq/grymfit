@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# BÚSQUEDA DIRECTA Y COMPLETA EN HOJA _APP
+# BÚSQUEDA COMPLETA EN HOJA PLAN_MES_APP
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -108,9 +108,9 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         if hoja_app_destino not in dict_hojas:
             return []
 
-        # Descargar la hoja completa hasta 3000 filas
+        # Leer la matriz completa de la hoja del mes sin restricción de bloques
         res_completo = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:ZZ3000"
+            spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:ZZ2000"
         ).execute()
         rows_matriz = res_completo.get('values', [])
         if not rows_matriz:
@@ -126,7 +126,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         nombre_buscar = re.sub(r'\s+', ' ', str(nombre_alumno).strip().upper())
 
-        # ESCANEO TOTAL DE LA HOJA: Busca al alumno en CUALQUIER fila de la columna B o la hoja
+        # ESCANEO VERTICAL COMPLETO DE LA HOJA
         for idx_f, fila in enumerate(matriz):
             for idx_c_nombre, val in enumerate(fila):
                 val_clean = re.sub(r'\s+', ' ', str(val).strip().upper())
@@ -136,7 +136,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                     fila_ej_base = -1
                     col_ejercicio_detectada = -1
 
-                    # Buscar encabezado Ejercicio en las celdas inferiores asociadas a esa fila
+                    # Buscar la cabecera 'Ejercicio' asociada
                     for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                         fila_sub = matriz[idx_sub]
                         for idx_c, val_c in enumerate(fila_sub):
@@ -158,7 +158,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         s_num = ((d - 1) // frec_semanal) + 1
                         d_num = ((d - 1) % frec_semanal) + 1
 
-                        for fila_idx in range(12):
+                        for fila_idx in range(15):
                             idx_f_matriz = fila_ejercicios_inicio + fila_idx
                             if idx_f_matriz < len(matriz):
                                 f_row = matriz[idx_f_matriz]
@@ -327,11 +327,10 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ2000").execute()
                     matriz = res_completo.get('values', [])
 
-                    # Maneja hasta 100 bloques para acomodar ilimitadamente a todos los alumnos
-                    filas_control = [2 + (41 * i) for i in range(100)]
+                    filas_control = [2 + (41 * i) for i in range(50)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
