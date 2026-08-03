@@ -92,7 +92,7 @@ def col2letter(col_idx):
     return result
 
 # ==========================================
-# ESCANEO PROFUNDO Y UNIFICADO DE DATOS
+# MOTOR DE BÚSQUEDA GENERAL DE DATOS DEL MES
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno == "-- Seleccionar --":
@@ -102,6 +102,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         sheet_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = sheet_metadata.get('sheets', [])
         
+        # Buscar todas las hojas asociadas al mes o de la App
         hojas_candidatas = [
             h['properties']['title'] for h in sheets 
             if mes_nombre.lower() in h['properties']['title'].lower()
@@ -124,8 +125,9 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
         nombre_clean_target = re.sub(r'\s+', '', str(nombre_alumno).upper())
 
         for nombre_hoja_real in hojas_candidatas:
+            # Escaneo general hasta 5000 filas
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ3000"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
             ).execute()
             rows_matriz = res_completo.get('values', [])
             if not rows_matriz:
@@ -134,17 +136,18 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
             max_c = max(len(r) for r in rows_matriz)
             matriz = [r + [''] * (max_c - len(r)) for r in rows_matriz]
 
+            # BÚSQUEDA GENERAL: Rastrear el nombre en cualquier celda de toda la hoja
             for idx_f, fila in enumerate(matriz):
                 for idx_c_nombre, val in enumerate(fila):
-                    val_str = str(val).upper()
-                    val_clean = re.sub(r'\s+', '', val_str)
+                    val_clean = re.sub(r'\s+', '', str(val).upper())
                     
                     if nombre_clean_target in val_clean and len(val_clean) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 30, len(matriz))):
+                        # Rastrear dónde empieza la tabla de ejercicios para este alumno
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 35, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_c, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
@@ -334,10 +337,11 @@ if modo_app == "Armar Planificación Mensual":
                     body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
                     service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
 
-                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
+                    res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ5000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_control = [2 + (41 * i) for i in range(100)]
+                    # Permite hasta 150 alumnos en una sola pestaña
+                    filas_control = [2 + (41 * i) for i in range(150)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
