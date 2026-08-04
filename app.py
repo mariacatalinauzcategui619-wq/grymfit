@@ -107,11 +107,9 @@ def normalizar_cadena(texto):
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
         return 3
-    col_al = "Alumno" if "Alumno" in df_alumnos.columns else df_alumnos.columns[0]
-    col_fr = "Frecuencia Entrenamiento" if "Frecuencia Entrenamiento" in df_alumnos.columns else (
-        "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else df_alumnos.columns[1]
-    )
-    
+    col_al = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0])
+    col_fr = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0])
+
     target_clean = normalizar_cadena(nombre_alumno)
     for idx, row in df_alumnos.iterrows():
         al_val = normalizar_cadena(row[col_al])
@@ -160,7 +158,7 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
     return []
 
 # ==========================================
-# LECTURA COMPLETA POR BLOQUES DE ALUMNO
+# LECTURA UNIVERSAL (DIRECTA + INYECCIÓN B2)
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -185,6 +183,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         nombre_target = normalizar_cadena(nombre_alumno)
 
+        # 1. ESCANEO EN TODA LA MATRIZ DE TODAS LAS PESTAÑAS DEL MES
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
@@ -205,8 +204,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        # Localizar el encabezado "Ejercicio" dentro del bloque del alumno
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_col_sub, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
@@ -223,7 +221,6 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
-                        # Escanear el total de días correspondiente según la frecuencia real
                         for d in range(1, total_dias + 1):
                             s_num = ((d - 1) // frec_semanal) + 1
                             d_num = ((d - 1) % frec_semanal) + 1
@@ -252,6 +249,53 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         if registros:
                             guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                             return registros
+
+        # 2. SI NO ESTÁ VISIBLE EN LA HOJA, INYECTAR EL NOMBRE EN B2 PARA RECALCULAR
+        if not registros and hojas_candidatas:
+            hoja_main = hojas_candidatas[0]
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!B2",
+                valueInputOption="USER_ENTERED", body={'values': [[nombre_alumno]]}
+            ).execute()
+
+            res_evaluado = service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!A1:ZZ150"
+            ).execute()
+            rows_m = res_evaluado.get('values', [])
+            if rows_m:
+                max_c2 = max(len(r) for r in rows_m)
+                matriz2 = [r + [''] * (max_c2 - len(r)) for r in rows_m]
+                col_inicio = 5
+                fila_ejercicios_inicio = 8
+
+                for d in range(1, total_dias + 1):
+                    s_num = ((d - 1) // frec_semanal) + 1
+                    d_num = ((d - 1) % frec_semanal) + 1
+
+                    for fila_idx in range(12):
+                        idx_f_matriz = fila_ejercicios_inicio + fila_idx
+                        if idx_f_matriz < len(matriz2):
+                            f_row = matriz2[idx_f_matriz]
+                            ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
+                            p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
+                            r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
+
+                            ej_str = str(ej).strip()
+                            if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
+                                if not re.match(r'^(semana|día|dia)\s*\d+', ej_str.lower()):
+                                    registros.append({
+                                        "Semana": s_num,
+                                        "Día": d_num,
+                                        "Fila": fila_idx + 1,
+                                        "Ejercicio": ej_str,
+                                        "Peso": str(p).strip(),
+                                        "Series_Reps": str(r).strip()
+                                    })
+                    col_inicio += 3
+
+        if registros:
+            guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
+            return registros
 
         return leer_respaldo_local(nombre_alumno, mes_nombre)
     except Exception:
@@ -490,7 +534,6 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
-                    # Guardar respaldo local suplementario
                     guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
 
                     if key_carga in st.session_state:
