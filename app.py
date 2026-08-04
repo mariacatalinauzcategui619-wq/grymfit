@@ -1,8 +1,10 @@
 import os
 import re
+import json
 import calendar
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -10,6 +12,11 @@ from googleapiclient.discovery import build
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Planificador GRYMFIT", layout="wide")
+
+# CARPETA LOCAL DE RESPALDOS ANTI-PÉRDIDA
+DIR_BACKUP = "backups_grymfit"
+if not os.path.exists(DIR_BACKUP):
+    os.makedirs(DIR_BACKUP, exist_ok=True)
 
 # ==========================================
 # CONEXIÓN DIRECTA A GOOGLE DRIVE
@@ -94,15 +101,18 @@ def col2letter(col_idx):
 def normalizar_cadena(texto):
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
+# ==========================================
+# OBTENCIÓN AUTOMÁTICA Y PRECISA DE FRECUENCIA
+# ==========================================
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
-        return 4
+        return 3
+    col_al = "Alumno" if "Alumno" in df_alumnos.columns else df_alumnos.columns[0]
+    col_fr = "Frecuencia Entrenamiento" if "Frecuencia Entrenamiento" in df_alumnos.columns else (
+        "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else df_alumnos.columns[1]
+    )
     
-    col_al = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0])
-    col_fr = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0])
-
     target_clean = normalizar_cadena(nombre_alumno)
-    
     for idx, row in df_alumnos.iterrows():
         al_val = normalizar_cadena(row[col_al])
         if target_clean == al_val and len(target_clean) > 2:
@@ -110,13 +120,50 @@ def obtener_frecuencia_alumno(nombre_alumno):
             nums = re.findall(r'\d+', val_frec)
             if nums:
                 return int(nums[0])
-    return 4
+    return 3
 
 # ==========================================
-# MOTOR DE BÚSQUEDA Y EVALUACIÓN DINÁMICA
+# FUNCIONES DE RESPALDO ANTI-PÉRDIDA
+# ==========================================
+def guardar_respaldo_local(nombre_alumno, mes_nombre, registros):
+    try:
+        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
+        master_data = {}
+        if os.path.exists(data_file):
+            with open(data_file, "r", encoding="utf-8") as f:
+                master_data = json.load(f)
+        
+        key = f"{normalizar_cadena(nombre_alumno)}_{normalizar_cadena(mes_nombre)}"
+        master_data[key] = {
+            "alumno": nombre_alumno,
+            "mes": mes_nombre,
+            "actualizado": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "rutina": registros
+        }
+        
+        with open(data_file, "w", encoding="utf-8") as f:
+            json.dump(master_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def leer_respaldo_local(nombre_alumno, mes_nombre):
+    try:
+        data_file = os.path.join(DIR_BACKUP, "master_backup.json")
+        if os.path.exists(data_file):
+            with open(data_file, "r", encoding="utf-8") as f:
+                master_data = json.load(f)
+            key = f"{normalizar_cadena(nombre_alumno)}_{normalizar_cadena(mes_nombre)}"
+            if key in master_data:
+                return master_data[key].get("rutina", [])
+    except Exception:
+        pass
+    return []
+
+# ==========================================
+# LECTURA COMPLETA POR BLOQUES DE ALUMNO
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
-    if not nombre_alumno or str(nombre_alumno).strip() in ["-- Seleccionar --", "", "None"]:
+    if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
         return []
 
     try:
@@ -133,11 +180,11 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         semanas_mes = obtener_semanas_del_mes(mes_nombre)
         frec_semanal = obtener_frecuencia_alumno(nombre_alumno)
+        total_dias = frec_semanal * semanas_mes
         registros = []
 
         nombre_target = normalizar_cadena(nombre_alumno)
 
-        # 1. BÚSQUEDA DIRECTA EN TODA LA MATRIZ (Pestañas App o Directas)
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
@@ -151,14 +198,15 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
             for idx_f, fila in enumerate(matriz):
                 for idx_c, val in enumerate(fila):
-                    val_clean = normalizar_cadena(val)
+                    val_str = normalizar_cadena(val)
                     
-                    if nombre_target == val_clean and len(val_clean) > 2:
+                    if nombre_target == val_str and len(val_str) > 2:
                         fila_alumno = idx_f
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
+                        # Localizar el encabezado "Ejercicio" dentro del bloque del alumno
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_col_sub, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
@@ -175,12 +223,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ejercicios_inicio = fila_ej_base + 1
                         col_inicio = col_ejercicio_detectada
 
-                        total_bloques = semanas_mes * frec_semanal
-                        bloque_count = 0
-
-                        while col_inicio < max_c - 1 and bloque_count < total_bloques:
-                            s_num = (bloque_count // frec_semanal) + 1
-                            d_num = (bloque_count % frec_semanal) + 1
+                        # Escanear el total de días correspondiente según la frecuencia real
+                        for d in range(1, total_dias + 1):
+                            s_num = ((d - 1) // frec_semanal) + 1
+                            d_num = ((d - 1) % frec_semanal) + 1
 
                             for fila_idx in range(12):
                                 idx_f_matriz = fila_ejercicios_inicio + fila_idx
@@ -201,65 +247,15 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                                                 "Peso": str(p).strip(),
                                                 "Series_Reps": str(r).strip()
                                             })
-
                             col_inicio += 3
-                            bloque_count += 1
 
                         if registros:
+                            guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                             return registros
 
-        # 2. EVALUACIÓN DINÁMICA SI EL ALUMNO ESTABA "OCULTO" EN EL DESPLEGABLE DEL DRIVE
-        if not registros and hojas_candidatas:
-            hoja_main = hojas_candidatas[0]
-            # Seleccionar dinámicamente al alumno en la celda B2 para recalcular formulas
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!B2",
-                valueInputOption="USER_ENTERED", body={'values': [[nombre_alumno]]}
-            ).execute()
-
-            res_evaluado = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{hoja_main}'!A1:ZZ200"
-            ).execute()
-            rows_m = res_evaluado.get('values', [])
-            if rows_m:
-                max_c2 = max(len(r) for r in rows_m)
-                matriz2 = [r + [''] * (max_c2 - len(r)) for r in rows_m]
-                col_inicio = 5
-                fila_ejercicios_inicio = 8
-
-                total_bloques = semanas_mes * frec_semanal
-                bloque_count = 0
-
-                while col_inicio < max_c2 - 1 and bloque_count < total_bloques:
-                    s_num = (bloque_count // frec_semanal) + 1
-                    d_num = (bloque_count % frec_semanal) + 1
-
-                    for fila_idx in range(12):
-                        idx_f_matriz = fila_ejercicios_inicio + fila_idx
-                        if idx_f_matriz < len(matriz2):
-                            f_row = matriz2[idx_f_matriz]
-                            ej = f_row[col_inicio] if len(f_row) > col_inicio else ""
-                            p = f_row[col_inicio + 1] if len(f_row) > col_inicio + 1 else ""
-                            r = f_row[col_inicio + 2] if len(f_row) > col_inicio + 2 else ""
-
-                            ej_str = str(ej).strip()
-                            if ej_str and ej_str.lower() not in ["", "-- seleccionar ejercicio --", "ejercicio", "none"]:
-                                if not re.match(r'^(semana|día|dia)\s*\d+', ej_str.lower()):
-                                    registros.append({
-                                        "Semana": s_num,
-                                        "Día": d_num,
-                                        "Fila": fila_idx + 1,
-                                        "Ejercicio": ej_str,
-                                        "Peso": str(p).strip(),
-                                        "Series_Reps": str(r).strip()
-                                    })
-
-                    col_inicio += 3
-                    bloque_count += 1
-
-        return registros
+        return leer_respaldo_local(nombre_alumno, mes_nombre)
     except Exception:
-        return []
+        return leer_respaldo_local(nombre_alumno, mes_nombre)
 
 # ==========================================
 # INTERFAZ Y NAVEGACIÓN
@@ -267,8 +263,10 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 st.sidebar.title("GRYMFIT App")
 modo_app = st.sidebar.radio("Navegación:", ["Armar Planificación Mensual", "Ver Rutinas en Vivo (4 Bloques)"])
 
-col_alumno = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0] if not df_alumnos.empty else "Alumno")
-col_frec = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else "Frecuencia")
+col_alumno = "Alumno" if "Alumno" in df_alumnos.columns else df_alumnos.columns[0]
+col_frec = "Frecuencia Entrenamiento" if "Frecuencia Entrenamiento" in df_alumnos.columns else (
+    "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else df_alumnos.columns[1]
+)
 
 raw_alumnos = df_alumnos[col_alumno].dropna().tolist() if not df_alumnos.empty else []
 lista_alumnos = sorted(list(set([str(a).strip() for a in raw_alumnos if str(a).strip() != ""])))
@@ -379,7 +377,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Guardando planificación directamente en Google Drive..."):
+            with st.spinner("⏳ Guardando planificación con doble capa de respaldo..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -402,7 +400,7 @@ if modo_app == "Armar Planificación Mensual":
                     res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_control = [2 + (41 * i) for i in range(100)]
+                    filas_control = [2 + (17 * i) for i in range(100)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
@@ -414,7 +412,7 @@ if modo_app == "Armar Planificación Mensual":
                     primer_slot_libre = -1
                     for idx, vr in enumerate(value_ranges):
                         val = vr.get('values', [['']])[0][0].strip() if vr.get('values') else ""
-                        if val.upper() == alumno_sel.upper():
+                        if normalizar_cadena(val) == normalizar_cadena(alumno_sel):
                             fila_control_alumno = filas_control[idx]
                             break
                         if val == "" and primer_slot_libre == -1:
@@ -447,6 +445,7 @@ if modo_app == "Armar Planificación Mensual":
                     col_inicio = 6
 
                     batch_global_data = []
+                    registros_para_respaldo = []
 
                     for d in range(1, total_dias_mes + 1):
                         s_num = ((d - 1) // frec_semanal) + 1
@@ -471,6 +470,10 @@ if modo_app == "Armar Planificación Mensual":
                                 
                                 if ej not in ["-- Seleccionar Ejercicio --", "", None]:
                                     ejercicios_dia.append([ej, p, r])
+                                    registros_para_respaldo.append({
+                                        "Semana": s_num, "Día": d_num, "Fila": f_idx,
+                                        "Ejercicio": ej, "Peso": p, "Series_Reps": r
+                                    })
                                 else:
                                     ejercicios_dia.append(["", "", ""])
                         else:
@@ -487,11 +490,14 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
+                    # Guardar respaldo local suplementario
+                    guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
+
                     if key_carga in st.session_state:
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ La rutina de {alumno_sel} ({mes_sel}) fue actualizada correctamente en Google Drive.")
+                    st.success(f"✅ ¡Sincronizado y Respaldado! La rutina de {alumno_sel} ({mes_sel}) quedó resguardada de forma permanente.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
