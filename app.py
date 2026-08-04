@@ -187,7 +187,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
+                spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ3000"
             ).execute()
             rows_matriz = res_completo.get('values', [])
             if not rows_matriz:
@@ -422,7 +422,7 @@ if modo_app == "Armar Planificación Mensual":
         st.dataframe(df_resumen, use_container_width=True)
 
         if st.button("💾 GUARDAR Y SINCRONIZAR EN GOOGLE DRIVE", type="primary", use_container_width=True):
-            with st.spinner("⏳ Sincronizando sin sobreescribir datos existentes..."):
+            with st.spinner("⏳ Sincronizando en la ubicación exacta del alumno sin sobreescribir datos..."):
                 try:
                     hoja_app_destino = f"Plan_{mes_sel}_App"
 
@@ -445,6 +445,7 @@ if modo_app == "Armar Planificación Mensual":
                     res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
                     matriz = res_completo.get('values', [])
 
+                    # BÚSQUEDA DEL BLOQUE CONTROL DEL ALUMNO
                     filas_control = [2 + (17 * i) for i in range(50)]
 
                     res_b = service.spreadsheets().values().batchGet(
@@ -487,125 +488,62 @@ if modo_app == "Armar Planificación Mensual":
 
                     fila_musculos_inicio = fila_ej_base - 4
                     fila_ejercicios_inicio = fila_ej_base + 1
-                    col_inicio = 6
+                    col_inicio = 5  # Columna F exacta de la plantilla original (Índice 5 base cero)
 
-                    batch_global_data = []
+                    batch_global_updates = []
                     registros_para_respaldo = []
-
-                    # ==========================================
-                    # DESCARGA DE LA MATRIZ COMPLETA PARA MERGE
-                    # ==========================================
-                    rango_lectura_actual = f"'{hoja_app_destino}'!A{fila_musculos_inicio}:AZ{fila_ejercicios_inicio+12}"
-                    res_actual = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=rango_lectura_actual).execute()
-                    matriz_actual = res_actual.get('values', [])
 
                     for d in range(1, total_dias_mes + 1):
                         s_num = ((d - 1) // frec_semanal) + 1
                         d_num = ((d - 1) % frec_semanal) + 1
                         key_dia = f"{alumno_sel}_{mes_sel}_S{s_num}_D{d_num}"
                         
-                        letra_col_ej = col2letter(col_inicio)
-                        letra_col_rep = col2letter(col_inicio + 2)
-
-                        ejercicios_dia = []
-                        grupos_dia = []
-
-                        # LEER GRUPOS MUSCULARES EXISTENTES EN DRIVE PARA PRESERVAR
-                        grupos_drive = []
-                        for idx_g in range(4):
-                            if idx_g < len(matriz_actual):
-                                row_g = matriz_actual[idx_g]
-                                idx_c_g = col_inicio - 1
-                                if idx_c_g < len(row_g):
-                                    val_g = str(row_g[idx_c_g]).strip()
-                                    if val_g:
-                                        grupos_drive.append(val_g)
+                        letra_col_ej = col2letter(col_inicio + 1)
+                        letra_col_rep = col2letter(col_inicio + 3)
 
                         if key_dia in st.session_state["plan_datos"]:
                             filas_dict = st.session_state["plan_datos"][key_dia]
                             
-                            # Obtener o preservar grupos
+                            # GRUPOS MUSCULARES
                             grupos_app = []
                             for f_idx in range(1, 11):
                                 if filas_dict.get(f"fila_{f_idx}", {}).get("Grupos"):
                                     grupos_app = filas_dict.get(f"fila_{f_idx}", {}).get("Grupos")
                                     break
                             
-                            grupos_dia = grupos_app if grupos_app else grupos_drive
+                            if grupos_app:
+                                g_matriz = [[g] for g in grupos_app] + [[""]] * (4 - len(grupos_app))
+                                batch_global_updates.append({
+                                    'range': f"'{hoja_app_destino}'!{letra_col_ej}{fila_musculos_inicio}:{letra_col_ej}{fila_musculos_inicio+3}", 
+                                    'values': g_matriz[:4]
+                                })
 
+                            # ACTUALIZACIÓN DE FILAS SOLO SI CONTIENEN DATOS (FUSIÓN NO DESTRUCTIVA)
                             for f_idx in range(1, 11):
                                 datos_f = filas_dict.get(f"fila_{f_idx}", {})
                                 ej_app = datos_f.get("Ejercicio", "")
                                 p_app = datos_f.get("Peso", "")
                                 r_app = datos_f.get("Series_Reps", "")
 
-                                # LEER VALORES QUE YA EXISTÍAN EN ESA CELDA EN DRIVE
-                                ej_drive, p_drive, r_drive = "", "", ""
-                                idx_fila_relativa = 5 + (f_idx - 1) # Desfase exacto desde fila_musculos_inicio
-                                if idx_fila_relativa < len(matriz_actual):
-                                    row_act = matriz_actual[idx_fila_relativa]
-                                    idx_col_matriz = col_inicio - 1
-                                    if idx_col_matriz < len(row_act):
-                                        ej_drive = str(row_act[idx_col_matriz]).strip()
-                                    if idx_col_matriz + 1 < len(row_act):
-                                        p_drive = str(row_act[idx_col_matriz + 1]).strip()
-                                    if idx_col_matriz + 2 < len(row_act):
-                                        r_drive = str(row_act[idx_col_matriz + 2]).strip()
-
-                                # FUSIÓN ANTI-PÉRDIDA CELDA POR CELDA:
-                                # Si la app no envió un ejercicio para esta fila, SE MANTIENE EL DE DRIVE.
                                 if ej_app and ej_app not in ["-- Seleccionar Ejercicio --", "", None]:
-                                    ej_final = ej_app
-                                    p_final = p_app
-                                    r_final = r_app
-                                else:
-                                    ej_final = ej_drive
-                                    p_final = p_drive
-                                    r_final = r_drive
-
-                                if ej_final and ej_final.lower() not in ["", "-- seleccionar ejercicio --", "none"]:
-                                    ejercicios_dia.append([ej_final, p_final, r_final])
+                                    fila_hoja_exacta = fila_ejercicios_inicio + (f_idx - 1)
+                                    range_fila = f"'{hoja_app_destino}'!{letra_col_ej}{fila_hoja_exacta}:{letra_col_rep}{fila_hoja_exacta}"
+                                    
+                                    batch_global_updates.append({
+                                        'range': range_fila,
+                                        'values': [[ej_app, p_app, r_app]]
+                                    })
                                     registros_para_respaldo.append({
                                         "Semana": s_num, "Día": d_num, "Fila": f_idx,
-                                        "Ejercicio": ej_final, "Peso": p_final, "Series_Reps": r_final
+                                        "Ejercicio": ej_app, "Peso": p_app, "Series_Reps": r_app
                                     })
-                                else:
-                                    ejercicios_dia.append(["", "", ""])
-                        else:
-                            # SI EL DÍA NO FUE ABIERTO EN LA APP, CONSERVAR TODO EL DÍA DEL DRIVE
-                            for f_idx in range(1, 11):
-                                ej_drive, p_drive, r_drive = "", "", ""
-                                idx_fila_relativa = 5 + (f_idx - 1)
-                                if idx_fila_relativa < len(matriz_actual):
-                                    row_act = matriz_actual[idx_fila_relativa]
-                                    idx_col_matriz = col_inicio - 1
-                                    if idx_col_matriz < len(row_act):
-                                        ej_drive = str(row_act[idx_col_matriz]).strip()
-                                    if idx_col_matriz + 1 < len(row_act):
-                                        p_drive = str(row_act[idx_col_matriz + 1]).strip()
-                                    if idx_col_matriz + 2 < len(row_act):
-                                        r_drive = str(row_act[idx_col_matriz + 2]).strip()
 
-                                if ej_drive and ej_drive.lower() not in ["", "-- seleccionar ejercicio --", "none"]:
-                                    ejercicios_dia.append([ej_drive, p_drive, r_drive])
-                                    registros_para_respaldo.append({
-                                        "Semana": s_num, "Día": d_num, "Fila": f_idx,
-                                        "Ejercicio": ej_drive, "Peso": p_drive, "Series_Reps": r_drive
-                                    })
-                                else:
-                                    ejercicios_dia.append(["", "", ""])
-                            grupos_dia = grupos_drive
-
-                        g_matriz = [[g] for g in grupos_dia] + [[""]] * (4 - len(grupos_dia))
-                        
-                        batch_global_data.append({'range': f"'{hoja_app_destino}'!{letra_col_ej}{fila_musculos_inicio}:{letra_col_ej}{fila_musculos_inicio+3}", 'values': g_matriz[:4]})
-                        batch_global_data.append({'range': f"'{hoja_app_destino}'!{letra_col_ej}{fila_ejercicios_inicio}:{letra_col_rep}{fila_ejercicios_inicio+9}", 'values': ejercicios_dia})
-                        
                         col_inicio += 3
 
-                    service.spreadsheets().values().batchUpdate(
-                        spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
-                    ).execute()
+                    if batch_global_updates:
+                        service.spreadsheets().values().batchUpdate(
+                            spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_updates}
+                        ).execute()
 
                     # Guardar respaldo local suplementario
                     guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
@@ -614,7 +552,7 @@ if modo_app == "Armar Planificación Mensual":
                         del st.session_state[key_carga]
 
                     st.balloons()
-                    st.success(f"✅ ¡Sincronización segura completada! Se integraron tus cambios sin perder los datos previos de Drive.")
+                    st.success(f"✅ ¡Guardado completado con éxito en tu plantilla original!")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ ERROR AL GUARDAR: {error}")
