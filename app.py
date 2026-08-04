@@ -107,9 +107,11 @@ def normalizar_cadena(texto):
 def obtener_frecuencia_alumno(nombre_alumno):
     if df_alumnos.empty:
         return 3
-    col_al = next((c for c in df_alumnos.columns if "alumno" in str(c).lower()), df_alumnos.columns[0])
-    col_fr = next((c for c in df_alumnos.columns if "frecuencia" in str(c).lower()), df_alumnos.columns[1] if len(df_alumnos.columns) > 1 else df_alumnos.columns[0])
-
+    col_al = "Alumno" if "Alumno" in df_alumnos.columns else df_alumnos.columns[0]
+    col_fr = "Frecuencia Entrenamiento" if "Frecuencia Entrenamiento" in df_alumnos.columns else (
+        "Frecuencia de Entrenamiento" if "Frecuencia de Entrenamiento" in df_alumnos.columns else df_alumnos.columns[1]
+    )
+    
     target_clean = normalizar_cadena(nombre_alumno)
     for idx, row in df_alumnos.iterrows():
         al_val = normalizar_cadena(row[col_al])
@@ -158,7 +160,7 @@ def leer_respaldo_local(nombre_alumno, mes_nombre):
     return []
 
 # ==========================================
-# LECTURA UNIVERSAL (DIRECTA + INYECCIÓN B2)
+# LECTURA COMPLETA Y UNIVERSAL (50+ ALUMNOS)
 # ==========================================
 def leer_plan_desde_drive(nombre_alumno, mes_nombre):
     if not nombre_alumno or nombre_alumno in ["-- Seleccionar --", "", None]:
@@ -183,7 +185,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
 
         nombre_target = normalizar_cadena(nombre_alumno)
 
-        # 1. ESCANEO EN TODA LA MATRIZ DE TODAS LAS PESTAÑAS DEL MES
+        # 1. ESCANEO EN TODAS LAS HOJAS
         for nombre_hoja_real in hojas_candidatas:
             res_completo = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=f"'{nombre_hoja_real}'!A1:ZZ5000"
@@ -204,7 +206,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                         fila_ej_base = -1
                         col_ejercicio_detectada = -1
 
-                        for idx_sub in range(fila_alumno, min(fila_alumno + 25, len(matriz))):
+                        for idx_sub in range(fila_alumno, min(fila_alumno + 20, len(matriz))):
                             fila_sub = matriz[idx_sub]
                             for idx_col_sub, val_c in enumerate(fila_sub):
                                 if str(val_c).strip().lower() in ["ejercicio", "ejercicios"]:
@@ -250,7 +252,7 @@ def leer_plan_desde_drive(nombre_alumno, mes_nombre):
                             guardar_respaldo_local(nombre_alumno, mes_nombre, registros)
                             return registros
 
-        # 2. SI NO ESTÁ VISIBLE EN LA HOJA, INYECTAR EL NOMBRE EN B2 PARA RECALCULAR
+        # 2. EVALUACIÓN EN TIEMPO REAL SI EL ALUMNO NO ESTABA VISIBLE EN B2
         if not registros and hojas_candidatas:
             hoja_main = hojas_candidatas[0]
             service.spreadsheets().values().update(
@@ -438,13 +440,16 @@ if modo_app == "Armar Planificación Mensual":
                         id_hoja_destino = dict_hojas[hoja_app_destino]
 
                     cols_necesarias = 6 + (total_dias_mes * 3) + 10
-                    body_expand_cols = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties.columnCount'}}]}
-                    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand_cols).execute()
+                    
+                    # EXPANDIR HOJA HASTA 3000 FILAS PARA EVITAR HTTPERROR 400
+                    body_expand = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': id_hoja_destino, 'gridProperties': {'rowCount': 3000, 'columnCount': max(100, cols_necesarias)}}, 'fields': 'gridProperties(rowCount,columnCount)'}}]}
+                    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body_expand).execute()
 
                     res_completo = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja_app_destino}'!A1:AZ3000").execute()
                     matriz = res_completo.get('values', [])
 
-                    filas_control = [2 + (17 * i) for i in range(100)]
+                    # BÚSQUEDA CONTROLADA DENTRO DE 50 BLOQUES DE ALUMNOS (HASTA FILA 835)
+                    filas_control = [2 + (17 * i) for i in range(50)]
 
                     res_b = service.spreadsheets().values().batchGet(
                         spreadsheetId=spreadsheet_id, 
@@ -534,6 +539,7 @@ if modo_app == "Armar Planificación Mensual":
                         spreadsheetId=spreadsheet_id, body={'valueInputOption': 'USER_ENTERED', 'data': batch_global_data}
                     ).execute()
 
+                    # Guardar respaldo local suplementario
                     guardar_respaldo_local(alumno_sel, mes_sel, registros_para_respaldo)
 
                     if key_carga in st.session_state:
